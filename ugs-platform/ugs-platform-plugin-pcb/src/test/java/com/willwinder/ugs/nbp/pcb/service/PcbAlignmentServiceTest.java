@@ -22,6 +22,7 @@ import com.willwinder.universalgcodesender.model.GUIBackend;
 import com.willwinder.universalgcodesender.model.Position;
 import com.willwinder.universalgcodesender.model.UnitUtils.Units;
 import com.willwinder.universalgcodesender.services.BackendFileLoader;
+import com.willwinder.universalgcodesender.utils.AutoLevelSettings;
 import com.willwinder.universalgcodesender.utils.GcodeStreamReader;
 import com.willwinder.universalgcodesender.utils.IGcodeStreamReader;
 import com.willwinder.universalgcodesender.utils.Settings;
@@ -187,6 +188,31 @@ public class PcbAlignmentServiceTest {
         service.alignLoadedFile(TRANSFORM, Code.G54);
 
         assertFalse(backend.getSettings().getAutoLevelSettings().getApplyToGcode());
+    }
+
+    @Test
+    public void heightMapShouldStayTurnedOffWhenAnotherSettingOfTheAutoLevelerIsChanged() throws Exception {
+        AutoLevelSettings settings = backend.getSettings().getAutoLevelSettings();
+        settings.setApplyToGcode(true);
+
+        // A panel of the auto leveler keeps a copy of the settings that it writes back when one is changed
+        AutoLevelSettings panelSettings = new AutoLevelSettings(settings);
+        service.alignLoadedFile(TRANSFORM, Code.G54);
+        panelSettings.apply(settings);
+        panelSettings.setStepResolution(5);
+        settings.apply(panelSettings);
+
+        assertFalse(settings.getApplyToGcode());
+        assertEquals(5, settings.getStepResolution(), 0);
+    }
+
+    @Test
+    public void heightMapShouldBeTurnedOffInCopiesOfTheSettings() throws Exception {
+        backend.getSettings().getAutoLevelSettings().setApplyToGcode(true);
+
+        service.alignLoadedFile(TRANSFORM, Code.G54);
+
+        assertFalse(new AutoLevelSettings(backend.getSettings().getAutoLevelSettings()).getApplyToGcode());
     }
 
     @Test

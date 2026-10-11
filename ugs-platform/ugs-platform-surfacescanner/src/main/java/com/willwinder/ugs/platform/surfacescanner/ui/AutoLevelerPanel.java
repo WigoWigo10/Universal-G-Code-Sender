@@ -62,6 +62,7 @@ public class AutoLevelerPanel extends JPanel {
     private PercentSpinner zRetract;
     private UnitSpinner zSurface;
     private boolean updatingControls = false;
+    private boolean updatingApplyToGcode = false;
 
     public AutoLevelerPanel(SurfaceScanner surfaceScanner, MeshLevelManager meshLevelManager, AutoLevelPreview autoLevelPreview, AutoLevelSettings autoLevelSettings, UnitUtils.Units units) {
         this.surfaceScanner = surfaceScanner;
@@ -69,7 +70,11 @@ public class AutoLevelerPanel extends JPanel {
         this.autoLevelPreview = autoLevelPreview;
 
         this.autoLevelSettings.apply(autoLevelSettings);
-        this.autoLevelSettings.setSettingChangeListener(() -> listeners.forEach(AutoLevelPanelListener::onSettingsChanged));
+        this.autoLevelSettings.setSettingChangeListener(() -> {
+            if (!updatingApplyToGcode) {
+                listeners.forEach(AutoLevelPanelListener::onSettingsChanged);
+            }
+        });
 
         initComponents();
         registerListeners();
@@ -202,6 +207,15 @@ public class AutoLevelerPanel extends JPanel {
     }
 
     public void setSettings(AutoLevelSettings autoLevelSettings) {
+        // If the height map is applied to the program or not does not change the scan. It is copied without
+        // telling the listeners, as they prepare a new scan and discard the scanned surface.
+        updatingApplyToGcode = true;
+        try {
+            this.autoLevelSettings.setApplyToGcode(autoLevelSettings.getApplyToGcode());
+        } finally {
+            updatingApplyToGcode = false;
+        }
+
         this.autoLevelSettings.apply(autoLevelSettings);
         syncSettingsToControls(autoLevelSettings);
     }

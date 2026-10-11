@@ -7,6 +7,7 @@ import com.willwinder.universalgcodesender.utils.Settings;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 
 public class AutoLevelerSettingsPanelTest {
 
@@ -29,5 +30,19 @@ public class AutoLevelerSettingsPanelTest {
         assertEquals(25.4, autoLevelSettings.getAutoLevelProbeOffset().getX(), 0.001);
         assertEquals(-25.4, autoLevelSettings.getAutoLevelProbeOffset().getY(), 0.001);
         assertEquals(UnitUtils.Units.MM, autoLevelSettings.getAutoLevelProbeOffset().getUnits());
+    }
+
+    @Test
+    public void save_shouldNotTurnApplyingTheHeightMapBackOn() {
+        Settings settings = new Settings();
+        AutoLevelSettings autoLevelSettings = settings.getAutoLevelSettings();
+        autoLevelSettings.setApplyToGcode(false);
+
+        AutoLevelerSettingsPanel panel = new AutoLevelerSettingsPanel(settings, null);
+        panel.updateComponents(settings);
+        autoLevelSettings.setTouchPlateThickness(2);
+        panel.save();
+
+        assertFalse(autoLevelSettings.getApplyToGcode());
     }
 }

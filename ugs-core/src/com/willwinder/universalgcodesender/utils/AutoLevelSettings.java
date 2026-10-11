@@ -64,8 +64,15 @@ public class AutoLevelSettings implements Serializable {
         apply(autoLevelSettings);
     }
 
+    /**
+     * Compares all settings. This is used by {@link #apply(AutoLevelSettings)} to decide if there is anything
+     * to copy, so a setting that is not compared here is not copied when it is the only one that differs.
+     * <p>
+     * Note that this does not override {@link Object#equals(Object)}: collections and
+     * {@link Objects#equals(Object, Object)} still compare by identity.
+     */
     public boolean equals(AutoLevelSettings obj) {
-        return this.minX == obj.minX && this.minY == obj.minY && this.minZ == obj.minZ && this.maxX == obj.maxX && this.maxY == obj.maxY && this.maxZ == obj.maxZ && Objects.equals(this.autoLevelProbeOffset, obj.autoLevelProbeOffset) && this.touchPlateThickness == obj.touchPlateThickness && this.autoLevelArcSliceLength == obj.autoLevelArcSliceLength && this.stepResolution == obj.stepResolution && this.probeSpeed == obj.probeSpeed && this.probeScanFeedRate == obj.probeScanFeedRate && this.zRetract == obj.zRetract && this.zSurface == obj.zSurface;
+        return this.minX == obj.minX && this.minY == obj.minY && this.minZ == obj.minZ && this.maxX == obj.maxX && this.maxY == obj.maxY && this.maxZ == obj.maxZ && Objects.equals(this.autoLevelProbeOffset, obj.autoLevelProbeOffset) && this.touchPlateThickness == obj.touchPlateThickness && this.autoLevelArcSliceLength == obj.autoLevelArcSliceLength && this.stepResolution == obj.stepResolution && this.probeSpeed == obj.probeSpeed && this.probeScanFeedRate == obj.probeScanFeedRate && this.zRetract == obj.zRetract && this.zSurface == obj.zSurface && this.applyToGcode == obj.applyToGcode;
     }
 
     public void setSettingChangeListener(SettingChangeListener settingChangeListener) {
