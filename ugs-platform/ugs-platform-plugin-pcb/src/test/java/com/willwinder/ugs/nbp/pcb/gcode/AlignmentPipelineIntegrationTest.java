@@ -10,6 +10,7 @@ import com.willwinder.universalgcodesender.gcode.processors.CommandProcessorList
 import com.willwinder.universalgcodesender.gcode.processors.LineSplitter;
 import com.willwinder.universalgcodesender.gcode.processors.MeshLeveler;
 import com.willwinder.universalgcodesender.gcode.processors.TranslateProcessor;
+import com.willwinder.universalgcodesender.gcode.util.Code;
 import com.willwinder.universalgcodesender.gcode.util.GcodeParserException;
 import com.willwinder.universalgcodesender.model.Position;
 import com.willwinder.universalgcodesender.model.UnitUtils.Units;
@@ -18,8 +19,13 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import org.junit.Ignore;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -34,7 +40,6 @@ public class AlignmentPipelineIntegrationTest {
     private static final String KNOWN_ISSUE_STATE = "Fails: CommandProcessorList gives every processor the position of the original program, "
             + "so a processor after one that moves the program starts its moves from the position before it was moved";
     private static final String KNOWN_ISSUE_INCHES = "Fails: LineSplitter compares its length in millimeters to distances in the units of the program";
-    private static final String KNOWN_ISSUE_WORK_COORDINATES = "Fails: AlignmentProcessor does not reject programs that change work coordinate system";
 
     private static final double TOLERANCE = 0.001;
     private static final double RESOLUTION = 10;
@@ -61,7 +66,21 @@ public class AlignmentPipelineIntegrationTest {
             "G0 Z5",
             "M5");
 
+    @Rule
+    public TemporaryFolder folder = new TemporaryFolder();
+
     private record Vertex(double x, double y, double z) {
+    }
+
+    /**
+     * Exports the program aligned in the same way as when the loaded program is aligned
+     */
+    private List<String> exportAligned(List<String> program, RigidTransform2D transform) throws Exception {
+        File source = folder.newFile();
+        Files.write(source.toPath(), program, StandardCharsets.UTF_8);
+        File target = new File(folder.getRoot(), source.getName() + "_aligned");
+        new AlignedGcodeExporter().export(source, transform, Code.G54, target);
+        return Files.readAllLines(target.toPath(), StandardCharsets.UTF_8);
     }
 
     /**
@@ -240,7 +259,7 @@ public class AlignmentPipelineIntegrationTest {
 
     private void assertSplitMoveStaysOnAlignedPath(RigidTransform2D transform, Vertex start, String command, Vertex end) throws GcodeParserException {
         List<String> commands = processCommand(command, start,
-                new AlignmentProcessor(transform, Units.MM), new LineSplitter(MAX_SEGMENT_LENGTH));
+                new AlignmentProcessor(transform, Units.MM, Code.G54), new LineSplitter(MAX_SEGMENT_LENGTH));
 
         Vertex alignedStart = vertex(transform, start.x(), start.y(), start.z());
         Vertex alignedEnd = vertex(transform, end.x(), end.y(), end.z());
@@ -261,7 +280,7 @@ public class AlignmentPipelineIntegrationTest {
     @Test
     public void alignmentWithoutLevelerShouldFollowAlignedPath() throws GcodeParserException {
         for (RigidTransform2D transform : List.of(TRANSLATION, ROTATION, ROTATION_AND_TRANSLATION)) {
-            List<String> result = process(PROGRAM, new AlignmentProcessor(transform, Units.MM));
+            List<String> result = process(PROGRAM, new AlignmentProcessor(transform, Units.MM, Code.G54));
 
             assertOnPath(programPath(transform), trace(result), FLAT);
         }
@@ -273,7 +292,7 @@ public class AlignmentPipelineIntegrationTest {
     @Test
     public void splitMoveFromX0ToX1TranslatedBy10ShouldStayBetweenX10AndX11() throws GcodeParserException {
         List<String> commands = processCommand("G1 X1", new Vertex(0, 0, 0),
-                new AlignmentProcessor(new RigidTransform2D(0, 10, 0), Units.MM), new LineSplitter(0.25));
+                new AlignmentProcessor(new RigidTransform2D(0, 10, 0), Units.MM, Code.G54), new LineSplitter(0.25));
 
         List<Position> positions = traceFrom(new Vertex(10, 0, 0), commands);
         for (Position position : positions) {
@@ -330,7 +349,7 @@ public class AlignmentPipelineIntegrationTest {
             Vertex center = vertex(transform, 20, 20, -0.1);
 
             List<String> clockwise = processCommand("G2 X20 Y10 I-10 J0", new Vertex(30, 20, -0.1),
-                    new AlignmentProcessor(transform, Units.MM), new LineSplitter(MAX_SEGMENT_LENGTH));
+                    new AlignmentProcessor(transform, Units.MM, Code.G54), new LineSplitter(MAX_SEGMENT_LENGTH));
             List<Position> positions = traceFrom(vertex(transform, 30, 20, -0.1), clockwise);
             assertOnArc(center, 10, positions);
             Vertex end = vertex(transform, 20, 10, -0.1);
@@ -338,7 +357,7 @@ public class AlignmentPipelineIntegrationTest {
             assertEquals(end.y(), positions.get(positions.size() - 1).getY(), TOLERANCE);
 
             List<String> counterClockwise = processCommand("G3 X30 Y20 I0 J10", new Vertex(20, 10, -0.1),
-                    new AlignmentProcessor(transform, Units.MM), new LineSplitter(MAX_SEGMENT_LENGTH));
+                    new AlignmentProcessor(transform, Units.MM, Code.G54), new LineSplitter(MAX_SEGMENT_LENGTH));
             positions = traceFrom(end, counterClockwise);
             assertOnArc(center, 10, positions);
             assertEquals(vertex(transform, 30, 20, -0.1).x(), positions.get(positions.size() - 1).getX(), TOLERANCE);
@@ -351,7 +370,7 @@ public class AlignmentPipelineIntegrationTest {
     @Ignore(KNOWN_ISSUE_STATE)
     @Test
     public void translatedProgramWithLevelerShouldFollowAlignedPathOnSurface() throws GcodeParserException {
-        List<String> result = process(PROGRAM, new AlignmentProcessor(TRANSLATION, Units.MM), createLevelerProcessors());
+        List<String> result = process(PROGRAM, new AlignmentProcessor(TRANSLATION, Units.MM, Code.G54), createLevelerProcessors());
 
         assertOnPath(programPath(TRANSLATION), trace(result), SURFACE);
     }
@@ -359,7 +378,7 @@ public class AlignmentPipelineIntegrationTest {
     @Ignore(KNOWN_ISSUE_STATE)
     @Test
     public void rotatedProgramWithLevelerShouldFollowAlignedPathOnSurface() throws GcodeParserException {
-        List<String> result = process(PROGRAM, new AlignmentProcessor(ROTATION, Units.MM), createLevelerProcessors());
+        List<String> result = process(PROGRAM, new AlignmentProcessor(ROTATION, Units.MM, Code.G54), createLevelerProcessors());
 
         assertOnPath(programPath(ROTATION), trace(result), SURFACE);
     }
@@ -367,7 +386,7 @@ public class AlignmentPipelineIntegrationTest {
     @Ignore(KNOWN_ISSUE_STATE)
     @Test
     public void rotatedAndTranslatedProgramWithLevelerShouldFollowAlignedPathOnSurface() throws GcodeParserException {
-        List<String> result = process(PROGRAM, new AlignmentProcessor(ROTATION_AND_TRANSLATION, Units.MM), createLevelerProcessors());
+        List<String> result = process(PROGRAM, new AlignmentProcessor(ROTATION_AND_TRANSLATION, Units.MM, Code.G54), createLevelerProcessors());
 
         assertOnPath(programPath(ROTATION_AND_TRANSLATION), trace(result), SURFACE);
     }
@@ -378,7 +397,7 @@ public class AlignmentPipelineIntegrationTest {
         List<String> program = List.of("G21 G90 G17", "G0 X30 Y20", "G0 Z-0.1", "G2 X20 Y10 I-10 J0 F100", "G3 X30 Y20 I0 J10");
         Vertex center = vertex(ROTATION_AND_TRANSLATION, 20, 20, -0.1);
 
-        List<String> result = process(program, new AlignmentProcessor(ROTATION_AND_TRANSLATION, Units.MM), createLevelerProcessors());
+        List<String> result = process(program, new AlignmentProcessor(ROTATION_AND_TRANSLATION, Units.MM, Code.G54), createLevelerProcessors());
 
         List<Position> positions = trace(result);
         assertFalse(positions.isEmpty());
@@ -389,6 +408,7 @@ public class AlignmentPipelineIntegrationTest {
         }
     }
 
+    @Ignore(KNOWN_ISSUE_STATE)
     @Test
     public void programInInchesWithLevelerShouldFollowAlignedPathOnSurface() throws GcodeParserException {
         // The translation is 0.2 inches along Y
@@ -400,7 +420,7 @@ public class AlignmentPipelineIntegrationTest {
                 vertex(transform, 30.48, 5.08, -0.1016),
                 vertex(transform, 30.48, 5.08, 5.08));
 
-        List<String> result = process(program, new AlignmentProcessor(transform, Units.MM), createLevelerProcessors());
+        List<String> result = process(program, new AlignmentProcessor(transform, Units.MM, Code.G54), createLevelerProcessors());
 
         assertOnPath(path, trace(result), SURFACE);
     }
@@ -415,12 +435,12 @@ public class AlignmentPipelineIntegrationTest {
         assertLongestMove(MAX_SEGMENT_LENGTH, trace(result));
     }
 
-    // Solution A: align the whole program first and run the leveler on the aligned program
+    // The flow in two steps: the program is exported aligned and the leveler is run on the aligned program
 
     @Test
-    public void levelerOnAlignedProgramShouldFollowAlignedPathOnSurface() throws GcodeParserException {
+    public void levelerOnAlignedProgramShouldFollowAlignedPathOnSurface() throws Exception {
         for (RigidTransform2D transform : List.of(TRANSLATION, ROTATION, ROTATION_AND_TRANSLATION)) {
-            List<String> alignedProgram = process(PROGRAM, new AlignmentProcessor(transform, Units.MM));
+            List<String> alignedProgram = exportAligned(PROGRAM, transform);
             List<String> result = process(alignedProgram, createLevelerProcessors());
 
             List<Position> positions = trace(result);
@@ -430,11 +450,11 @@ public class AlignmentPipelineIntegrationTest {
     }
 
     @Test
-    public void levelerOnAlignedProgramWithArcsShouldFollowAlignedArcOnSurface() throws GcodeParserException {
+    public void levelerOnAlignedProgramWithArcsShouldFollowAlignedArcOnSurface() throws Exception {
         List<String> program = List.of("G21 G90 G17", "G0 X30 Y20", "G0 Z-0.1", "G2 X20 Y10 I-10 J0 F100", "G3 X30 Y20 I0 J10");
         Vertex center = vertex(ROTATION_AND_TRANSLATION, 20, 20, -0.1);
 
-        List<String> alignedProgram = process(program, new AlignmentProcessor(ROTATION_AND_TRANSLATION, Units.MM));
+        List<String> alignedProgram = exportAligned(program, ROTATION_AND_TRANSLATION);
         List<String> result = process(alignedProgram, createLevelerProcessors());
 
         List<Position> positions = trace(result);
@@ -444,6 +464,22 @@ public class AlignmentPipelineIntegrationTest {
             assertEquals("Radius at " + position, 10, radius, 0.01);
             assertEquals("Z at " + position, -0.1 + surfaceHeight(position.getX(), position.getY()), position.getZ(), TOLERANCE);
         }
+    }
+
+    @Test
+    public void levelerOnAlignedProgramInInchesShouldFollowAlignedPathOnSurface() throws Exception {
+        // The translation is 0.2 inches along Y
+        RigidTransform2D transform = new RigidTransform2D(0, 0, 5.08);
+        List<String> program = List.of("G20 G90 G17", "G0 Z0.2", "G0 X0.2 Y0.2", "G1 Z-0.004 F2", "G1 X1.2 F4", "G0 Z0.2");
+        List<Vertex> path = List.of(
+                vertex(transform, 5.08, 5.08, 5.08),
+                vertex(transform, 5.08, 5.08, -0.1016),
+                vertex(transform, 30.48, 5.08, -0.1016),
+                vertex(transform, 30.48, 5.08, 5.08));
+
+        List<String> result = process(exportAligned(program, transform), createLevelerProcessors());
+
+        assertOnPath(path, trace(result), SURFACE);
     }
 
     // Other processors and states
@@ -460,14 +496,13 @@ public class AlignmentPipelineIntegrationTest {
         }
     }
 
-    @Ignore(KNOWN_ISSUE_WORK_COORDINATES)
     @Test
     public void workCoordinateSystemChangeShouldBeRejected() {
         // The transform is measured in one work coordinate system and is not valid in another
         List<String> program = List.of("G21 G90 G17", "G54", "G0 X5 Y5", "G55", "G0 X5 Y5");
 
         try {
-            List<String> result = process(program, new AlignmentProcessor(TRANSLATION, Units.MM));
+            List<String> result = process(program, new AlignmentProcessor(TRANSLATION, Units.MM, Code.G54));
             fail("The program was aligned with the same transform in both work coordinate systems: " + result);
         } catch (GcodeParserException e) {
             // Expected

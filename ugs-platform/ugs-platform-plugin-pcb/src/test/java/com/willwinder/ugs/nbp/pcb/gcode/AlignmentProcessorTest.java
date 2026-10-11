@@ -9,10 +9,13 @@ import com.willwinder.universalgcodesender.gcode.util.Plane;
 import com.willwinder.universalgcodesender.model.Position;
 import com.willwinder.universalgcodesender.model.UnitUtils.Units;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import org.junit.Test;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -27,7 +30,7 @@ public class AlignmentProcessorTest {
     }
 
     private static List<String> process(RigidTransform2D transform, String command, GcodeState state) throws GcodeParserException {
-        return new AlignmentProcessor(transform, Units.MM).processCommand(command, state);
+        return new AlignmentProcessor(transform, Units.MM, Code.G54).processCommand(command, state);
     }
 
     private static void assertRejected(String expectedError, String command, GcodeState state) {
@@ -82,17 +85,30 @@ public class AlignmentProcessorTest {
     }
 
     @Test
-    public void moveWithOnlyZShouldGetAlignedXYForFollowingProcessors() throws GcodeParserException {
-        List<String> commands = process(TRANSLATION, "G1 Z-1 F50", stateAt(3, 4, 0));
-
-        assertEquals(List.of("G1 Z-1 F50X13Y9"), commands);
+    public void moveWithOnlyZShouldNotChange() throws GcodeParserException {
+        assertEquals(List.of("G1 Z-1 F50"), process(TRANSLATION, "G1 Z-1 F50", stateAt(3, 4, 0)));
+        assertEquals(List.of("G0 Z5"), process(TRANSLATION, "G0 Z5", new GcodeState()));
     }
 
     @Test
-    public void moveWithOnlyZAndUnknownPositionShouldNotChange() throws GcodeParserException {
-        List<String> commands = process(TRANSLATION, "G0 Z5", new GcodeState());
+    public void measuredWorkCoordinateSystemShouldBeAccepted() throws GcodeParserException {
+        assertEquals(List.of("G54"), process(TRANSLATION, "G54", stateAt(0, 0, 0)));
+        assertEquals(List.of("G54 G0 X11 Y7"), process(TRANSLATION, "G54 G0 X1 Y2", stateAt(0, 0, 0)));
+    }
 
-        assertEquals(List.of("G0 Z5"), commands);
+    @Test
+    public void otherWorkCoordinateSystemsShouldBeRejected() {
+        for (String command : List.of("G55", "G56 G0 X1 Y1", "G57", "G58", "G59", "G59.1", "G59.2", "G59.3")) {
+            assertRejected(AlignmentProcessor.ERROR_WORK_COORDINATE_SYSTEM, command, stateAt(0, 0, 0));
+        }
+    }
+
+    @Test
+    public void processorShouldNotBePublicSoThatItCanNotBeAppliedToTheBackend() {
+        assertFalse(Modifier.isPublic(AlignmentProcessor.class.getModifiers()));
+        for (Constructor<?> constructor : AlignmentProcessor.class.getDeclaredConstructors()) {
+            assertFalse(Modifier.isPublic(constructor.getModifiers()));
+        }
     }
 
     @Test
@@ -192,7 +208,7 @@ public class AlignmentProcessorTest {
     @Test
     public void programShouldBeAlignedUsingPositionsFromTheOriginalProgram() throws GcodeParserException {
         GcodeParser parser = new GcodeParser();
-        parser.addCommandProcessor(new AlignmentProcessor(new RigidTransform2D(Math.PI / 2, 100, 0), Units.MM));
+        parser.addCommandProcessor(new AlignmentProcessor(new RigidTransform2D(Math.PI / 2, 100, 0), Units.MM, Code.G54));
 
         List<String> result = new ArrayList<>();
         for (String command : List.of("G21 G90", "G0 Z5", "G0 X0 Y0", "G1 Z-0.1 F100", "G1 X10", "G1 Y10", "G0 Z5", "M5")) {
@@ -204,10 +220,10 @@ public class AlignmentProcessorTest {
                 "G21 G90",
                 "G0 Z5",
                 "G0 X100 Y0",
-                "G1 Z-0.1 F100X100Y0",
+                "G1 Z-0.1 F100",
                 "G1 X100Y10",
                 "G1 Y10X90",
-                "G0 Z5X90Y10",
+                "G0 Z5",
                 "M5"), result);
     }
 }

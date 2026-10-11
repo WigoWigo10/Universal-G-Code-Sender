@@ -48,15 +48,21 @@ import java.util.Set;
  * aligning a program to where the PCB actually is on the machine.
  * <p>
  * Arcs are expanded to line segments. The processor only supports programs in absolute mode
- * in the XY plane, anything it can not transform safely is rejected with an error instead of
- * being passed through.
+ * in the XY plane and in one work coordinate system, anything it can not transform safely is
+ * rejected with an error instead of being passed through.
+ * <p>
+ * The processor must only be used on a whole program in a parser of its own, which is what
+ * {@link AlignedGcodeExporter} does. It is not public so that it can not be applied to the backend:
+ * processors that are chained after one that moves the program start their moves from the position
+ * of the original program, which makes the line splitter of the auto leveler cut in the wrong place.
  */
-public class AlignmentProcessor implements CommandProcessor {
+class AlignmentProcessor implements CommandProcessor {
     public static final String ERROR_RELATIVE_MODE = "Alignment does not support relative positioning (G91): ";
     public static final String ERROR_UNSUPPORTED_PLANE = "Alignment only supports the XY plane (G17): ";
     public static final String ERROR_UNSUPPORTED_COMMAND = "Alignment does not support the command: ";
     public static final String ERROR_MACHINE_COORDINATES = "Alignment does not support XY moves in machine coordinates (G53): ";
     public static final String ERROR_UNEXPANDED_ARC = "Alignment could not convert the arc to lines, it needs an end point in X or Y: ";
+    public static final String ERROR_WORK_COORDINATE_SYSTEM = "Alignment was measured in another work coordinate system than the one selected by the command: ";
     public static final String ERROR_UNKNOWN_POSITION = "Alignment needs both X and Y to be known, start the program with a move to an XY position: ";
 
     public static final double DEFAULT_ARC_SEGMENT_LENGTH_MM = 0.1;
@@ -75,24 +81,19 @@ public class AlignmentProcessor implements CommandProcessor {
 
     private final RigidTransform2D transform;
     private final Units translationUnits;
+    private final Code workCoordinateSystem;
     private final ArcExpander arcExpander;
 
     /**
-     * @param transform        the transform from the coordinates in the program to the aligned coordinates
-     * @param translationUnits the units of the translation in the transform
+     * @param transform            the transform from the coordinates in the program to the aligned coordinates
+     * @param translationUnits     the units of the translation in the transform
+     * @param workCoordinateSystem the work coordinate system that the transform was measured in
      */
-    public AlignmentProcessor(RigidTransform2D transform, Units translationUnits) {
-        this(transform, translationUnits, DEFAULT_ARC_SEGMENT_LENGTH_MM);
-    }
-
-    public AlignmentProcessor(RigidTransform2D transform, Units translationUnits, double arcSegmentLengthMM) {
+    AlignmentProcessor(RigidTransform2D transform, Units translationUnits, Code workCoordinateSystem) {
         this.transform = transform;
         this.translationUnits = translationUnits;
-        this.arcExpander = new ArcExpander(true, arcSegmentLengthMM);
-    }
-
-    public RigidTransform2D getTransform() {
-        return transform;
+        this.workCoordinateSystem = workCoordinateSystem;
+        this.arcExpander = new ArcExpander(true, DEFAULT_ARC_SEGMENT_LENGTH_MM);
     }
 
     @Override
@@ -112,7 +113,7 @@ public class AlignmentProcessor implements CommandProcessor {
         // Arcs may be given with only a center offset, such as a full circle
         boolean hasPlanarWords = hasWord(args, 'X') || hasWord(args, 'Y') || hasWord(args, 'I') || hasWord(args, 'J');
         if (!hasPlanarWords) {
-            return Collections.singletonList(alignMoveWithoutPlanarWords(command, args, gCodes, state));
+            return Collections.singletonList(command);
         }
 
         if (gCodes.contains(G53)) {
@@ -144,6 +145,11 @@ public class AlignmentProcessor implements CommandProcessor {
         if (gCodes.contains(Code.G18) || gCodes.contains(Code.G19)) {
             throw new GcodeParserException(ERROR_UNSUPPORTED_PLANE + command);
         }
+        for (Code code : gCodes) {
+            if (code.getType() == Code.ModalGroup.WCS && code != workCoordinateSystem) {
+                throw new GcodeParserException(ERROR_WORK_COORDINATE_SYSTEM + command);
+            }
+        }
         if (gCodes.stream().anyMatch(UNSUPPORTED_CODES::contains)) {
             throw new GcodeParserException(ERROR_UNSUPPORTED_COMMAND + command);
         }
@@ -156,24 +162,6 @@ public class AlignmentProcessor implements CommandProcessor {
                 // Not a code we can interpret, leave it to the parser
             }
         }
-    }
-
-    /**
-     * A move in only Z keeps its XY position, but the aligned XY position is added to the command
-     * anyway. Processors that run after this one, such as the mesh leveler, only know the position
-     * from the original program and would otherwise use the unaligned XY position for these moves.
-     */
-    private String alignMoveWithoutPlanarWords(String command, List<String> args, Set<Code> gCodes, GcodeState state) throws GcodeParserException {
-        boolean isAlignable = hasWord(args, 'Z') && !gCodes.contains(G53) && state.inAbsoluteMode && state.plane == Plane.XY;
-        if (!isAlignable) {
-            return command;
-        }
-
-        Position current = state.currentPoint;
-        if (current == null || !Double.isFinite(current.getX()) || !Double.isFinite(current.getY())) {
-            return command;
-        }
-        return transformLine(command, state);
     }
 
     private String transformLine(String line, GcodeState state) throws GcodeParserException {
