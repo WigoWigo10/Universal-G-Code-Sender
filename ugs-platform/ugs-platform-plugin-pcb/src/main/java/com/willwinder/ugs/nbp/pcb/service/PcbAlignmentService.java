@@ -198,12 +198,18 @@ public class PcbAlignmentService implements UGSEventListener {
         verifyWorkCoordinateSystem(workCoordinateSystem);
 
         File source = findOriginalFile(loadedFile);
-        String name = FilenameUtils.getBaseName(source.getName()) + ALIGNED_FILE_SUFFIX + "." + FilenameUtils.getExtension(source.getName());
-        File target = new File(source.getAbsoluteFile().getParentFile(), name);
-
-        AlignedGcodeFile alignedFile = exporter.export(source, transform, workCoordinateSystem, target);
+        AlignedGcodeFile alignedFile = exporter.export(source, transform, workCoordinateSystem, getAlignedFile(source));
         load(alignedFile);
         return alignedFile;
+    }
+
+    /**
+     * Returns the file that the aligned program of an original program is written to, which is next to it
+     */
+    public File getAlignedFile(File source) {
+        String extension = FilenameUtils.getExtension(source.getName());
+        String name = FilenameUtils.getBaseName(source.getName()) + ALIGNED_FILE_SUFFIX + (extension.isEmpty() ? "" : "." + extension);
+        return new File(source.getAbsoluteFile().getParentFile(), name);
     }
 
     /**

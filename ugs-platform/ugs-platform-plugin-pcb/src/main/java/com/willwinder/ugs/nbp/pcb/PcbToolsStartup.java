@@ -20,10 +20,13 @@ package com.willwinder.ugs.nbp.pcb;
 
 import com.willwinder.ugs.nbp.pcb.service.PcbAlignmentService;
 import com.willwinder.ugs.nbp.pcb.service.PcbJobValidator;
+import com.willwinder.ugs.nbp.pcb.ui.PcbAlignmentTopComponent;
 import com.willwinder.universalgcodesender.model.BackendAPI;
 import com.willwinder.universalgcodesender.services.LookupService;
 import com.willwinder.universalgcodesender.services.RunFromService;
 import org.openide.modules.OnStart;
+import org.openide.windows.TopComponent;
+import org.openide.windows.WindowManager;
 
 import java.util.function.IntSupplier;
 import java.util.logging.Logger;
@@ -39,11 +42,26 @@ import java.util.logging.Logger;
 public class PcbToolsStartup implements Runnable {
     private static final Logger LOGGER = Logger.getLogger(PcbToolsStartup.class.getName());
 
+    /**
+     * A system property for developers, which opens the alignment window when the application has started
+     */
+    public static final String OPEN_ALIGNMENT_WINDOW_PROPERTY = "ugs.pcb.alignment.open";
+
     @Override
     public void run() {
         BackendAPI backend = LookupService.lookup(BackendAPI.class);
         RunFromService runFromService = LookupService.lookup(RunFromService.class);
         register(backend, runFromService::getLineNumber);
+
+        if (Boolean.getBoolean(OPEN_ALIGNMENT_WINDOW_PROPERTY)) {
+            WindowManager.getDefault().invokeWhenUIReady(() -> {
+                TopComponent window = WindowManager.getDefault().findTopComponent(PcbAlignmentTopComponent.PREFERRED_ID);
+                if (window != null) {
+                    window.open();
+                    window.requestActive();
+                }
+            });
+        }
     }
 
     /**
