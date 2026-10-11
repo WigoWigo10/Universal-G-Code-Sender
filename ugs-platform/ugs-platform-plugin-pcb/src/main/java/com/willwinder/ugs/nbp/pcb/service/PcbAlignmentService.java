@@ -256,8 +256,17 @@ public class PcbAlignmentService implements UGSEventListener {
 
     @Override
     public synchronized void UGSEvent(UGSEvent event) {
-        boolean isFileLoaded = event instanceof FileStateEvent fileStateEvent && fileStateEvent.getFileState() == FileState.FILE_LOADED;
-        if (!isFileLoaded || isLoading) {
+        if (!(event instanceof FileStateEvent fileStateEvent) || isLoading) {
+            return;
+        }
+
+        // The program was unloaded or could not be processed, so there is nothing left that is validated
+        if (fileStateEvent.getFileState() == FileState.FILE_UNLOADED) {
+            validationState = ValidationState.NOT_VALIDATED;
+            approval = null;
+            return;
+        }
+        if (fileStateEvent.getFileState() != FileState.FILE_LOADED) {
             return;
         }
 
@@ -293,6 +302,7 @@ public class PcbAlignmentService implements UGSEventListener {
         } catch (Exception e) {
             // The failure that caused the unload is the one that is reported
         }
+        validationState = ValidationState.INVALID;
     }
 
     private static boolean isSameFile(File first, File second) {

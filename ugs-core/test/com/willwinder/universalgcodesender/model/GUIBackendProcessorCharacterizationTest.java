@@ -8,12 +8,11 @@ import com.willwinder.universalgcodesender.utils.GcodeStreamReader;
 import com.willwinder.universalgcodesender.utils.IGcodeStreamReader;
 import com.willwinder.universalgcodesender.utils.Settings;
 import org.apache.commons.io.FileUtils;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
-import static org.junit.Assert.fail;
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Test;
 
 import java.io.File;
@@ -134,17 +133,16 @@ public class GUIBackendProcessorCharacterizationTest {
         assertEquals(List.of("G0X1", "G0X2", "G0X3", "G0X4"), readCommands(backend.getProcessedGcodeFile()));
     }
 
-    @Ignore("Fails: the commands processed before the failure are left as the processed file, which is what gets sent")
     @Test
     public void failingProcessorShouldNotLeavePartlyProcessedFile() throws Exception {
         backend.setGcodeFile(createGcodeFile(PROGRAM));
+        File directory = backend.getProcessedGcodeFile().getParentFile();
+        String[] filesBefore = directory.list();
 
         assertThrows(Exception.class, () -> backend.applyCommandProcessor(failsOnThirdCommand));
 
-        File processedFile = backend.getProcessedGcodeFile();
-        if (processedFile != null) {
-            fail("A processed file with the commands " + readCommands(processedFile) + " is still available for sending");
-        }
-        assertNull(processedFile);
+        // Nothing is left, neither as the processed program nor as a file
+        assertNull(backend.getProcessedGcodeFile());
+        assertArrayEquals(filesBefore, directory.list());
     }
 }

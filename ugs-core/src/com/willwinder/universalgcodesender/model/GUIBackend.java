@@ -65,6 +65,8 @@ import javax.script.ScriptEngineManager;
 import javax.script.ScriptException;
 import java.io.File;
 import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -74,12 +76,15 @@ import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * @author wwinder
  */
 public class GUIBackend implements BackendAPI {
     private static final Logger logger = Logger.getLogger(GUIBackend.class.getName());
+
+    public static final String ERROR_PROGRAM_NOT_PROCESSED = "The program can not be started because it could not be processed. Load it again, or remove what was applied to it.";
     private static final String NEW_LINE = "\n    ";
 
     private final MessageService messageService = new MessageService();
@@ -408,10 +413,19 @@ public class GUIBackend implements BackendAPI {
     }
 
     private void processGcodeFile() throws Exception {
+        // Nothing from an earlier processing may be sent if this one fails
         this.processedGcodeFile = null;
 
         eventDispatcher.sendUGSEvent(new FileStateEvent(FileState.FILE_LOADING));
-        initializeProcessedLines(true, this.gcodeFile, this.gcp);
+        try {
+            initializeProcessedLines(true, this.gcodeFile, this.gcp);
+        } catch (Exception e) {
+            // The program is still loaded but there is nothing to show, estimate or send until it has been
+            // processed again, which happens when it is reloaded or when a processor is removed
+            this.processedGcodeFile = null;
+            eventDispatcher.sendUGSEvent(new FileStateEvent(FileState.FILE_UNLOADED));
+            throw e;
+        }
         if (this.processedGcodeFile != null) {
             gcodeStream = new GcodeStreamReader(this.processedGcodeFile, getCommandCreator());
         }
@@ -469,6 +483,10 @@ public class GUIBackend implements BackendAPI {
         // Using a GcodeFileWriter instead of a GcodeStreamWriter so that the user can review a standard gcode file.
         try (IGcodeWriter gcw = new GcodeFileWriter(target)) {
             preprocessAndExportToFile(parser, this.processedGcodeFile, gcw);
+        } catch (Exception e) {
+            // A part of the program must not be left where it can be opened
+            java.nio.file.Files.deleteIfExists(target.toPath());
+            throw e;
         }
 
         this.setGcodeFile(target);
@@ -527,6 +545,9 @@ public class GUIBackend implements BackendAPI {
 
             // The same file is opened for streaming and validated, also if the program is processed again meanwhile
             File jobFile = this.processedGcodeFile;
+            if (jobFile == null) {
+                throw new JobValidationException(ERROR_PROGRAM_NOT_PROCESSED);
+            }
             gcodeStream = new GcodeStreamReader(jobFile, getCommandCreator());
 
             // This will throw an exception and prevent that other stuff from
@@ -614,6 +635,7 @@ public class GUIBackend implements BackendAPI {
     public boolean canSend() {
         return isIdle() &&
                 this.gcodeFile != null &&
+                this.processedGcodeFile != null &&
                 (controller != null && !controller.isStreaming());
     }
 
@@ -790,18 +812,111 @@ public class GUIBackend implements BackendAPI {
                     name = match.group(1);
                 }
 
-                this.processedGcodeFile = new File(this.getTempDir(), name + "_ugs_" + System.currentTimeMillis());
-                try (IGcodeWriter gcw = new GcodeStreamWriter(this.processedGcodeFile)) {
-                    this.preprocessAndExportToFile(gcodeParser, startFile, gcw);
-                }
+                // The program is written to a file of its own that only becomes the processed program when all
+                // of it has been processed, written and verified. A failure must never leave a part of the
+                // program where it can be sent.
+                File temporaryFile = File.createTempFile(name + "_ugs_", ".tmp", this.getTempDir());
+                try {
+                    int numberOfRows;
+                    try (RowCountingGcodeWriter gcw = new RowCountingGcodeWriter(new GcodeStreamWriter(temporaryFile))) {
+                        this.preprocessAndExportToFile(gcodeParser, startFile, gcw);
+                        numberOfRows = gcw.getNumberOfRows();
+                    }
+                    verifyProcessedFile(temporaryFile, numberOfRows);
 
-                // Store gcode file stats.
-                GcodeStats gs = gcodeParser.getCurrentStats();
-                this.settings.setFileStats(new FileStats(
-                        gs.getMin(), gs.getMax(), gs.getCommandCount()));
+                    File processedFile = createProcessedFile(name);
+                    java.nio.file.Files.move(temporaryFile.toPath(), processedFile.toPath());
+
+                    // Store gcode file stats.
+                    GcodeStats gs = gcodeParser.getCurrentStats();
+                    this.settings.setFileStats(new FileStats(
+                            gs.getMin(), gs.getMax(), gs.getCommandCount()));
+                    this.processedGcodeFile = processedFile;
+                } catch (Exception e) {
+                    // The statistics are of a part of the program
+                    gcodeParser.reset();
+                    throw e;
+                } finally {
+                    java.nio.file.Files.deleteIfExists(temporaryFile.toPath());
+                }
             }
             long end = System.currentTimeMillis();
             logger.info("Took " + (end - start) + "ms to preprocess");
+        }
+    }
+
+    private File createProcessedFile(String name) {
+        long suffix = System.currentTimeMillis();
+        File result = new File(this.getTempDir(), name + "_ugs_" + suffix);
+        while (result.exists()) {
+            result = new File(this.getTempDir(), name + "_ugs_" + ++suffix);
+        }
+        return result;
+    }
+
+    /**
+     * Verifies that the written file is the whole processed program. The writer does not report if it fails
+     * to write, so the file is read back: it must be readable as a processed program and have exactly the
+     * rows that were written to it.
+     *
+     * @param file         the file that was written
+     * @param numberOfRows the number of rows that were written
+     * @throws IOException if the file is not the complete processed program
+     */
+    protected void verifyProcessedFile(File file, int numberOfRows) throws IOException {
+        int declaredRows;
+        try (GcodeStreamReader reader = new GcodeStreamReader(file, new DefaultCommandCreator())) {
+            declaredRows = reader.getNumRows();
+        } catch (GcodeStreamReader.NotGcodeStreamFile e) {
+            throw new IOException("The processed program could not be read back: " + file, e);
+        }
+
+        long writtenLines;
+        try (Stream<String> lines = java.nio.file.Files.lines(file.toPath(), StandardCharsets.UTF_8)) {
+            writtenLines = lines.count();
+        }
+
+        // The first line of the file is its metadata
+        if (declaredRows != numberOfRows || writtenLines != numberOfRows + 1L) {
+            throw new IOException("The processed program is incomplete, it has " + (writtenLines - 1) + " of " + numberOfRows + " rows: " + file);
+        }
+    }
+
+    /**
+     * Counts the rows that are written, to be able to verify the written file
+     */
+    private static class RowCountingGcodeWriter implements IGcodeWriter {
+        private final IGcodeWriter delegate;
+        private int numberOfRows;
+
+        RowCountingGcodeWriter(IGcodeWriter delegate) {
+            this.delegate = delegate;
+        }
+
+        int getNumberOfRows() {
+            return numberOfRows;
+        }
+
+        @Override
+        public String getCanonicalPath() throws IOException {
+            return delegate.getCanonicalPath();
+        }
+
+        @Override
+        public void addLine(GcodeCommand command) {
+            delegate.addLine(command);
+            numberOfRows++;
+        }
+
+        @Override
+        public void addLine(String original, String processed, String comment, int commandNumber) {
+            delegate.addLine(original, processed, comment, commandNumber);
+            numberOfRows++;
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
         }
     }
 

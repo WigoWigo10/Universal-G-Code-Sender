@@ -356,15 +356,30 @@ public class PcbAlignmentServiceTest {
     }
 
     @Test
-    public void partlyProcessedProgramShouldBeInvalid() throws Exception {
+    public void programThatCouldNotBeProcessedShouldBeInvalid() throws Exception {
         service.alignLoadedFile(TRANSFORM, Code.G54);
 
-        // The backend keeps the part of the program that was processed before the failure
+        // The backend does not keep any of the program when processing fails
         assertThrows(Exception.class, () -> backend.applyCommandProcessor(failsOn("F100")));
+        assertEquals(ValidationState.NOT_VALIDATED, service.getValidationState());
+        assertTrue(service.getApproval().isEmpty());
 
         AlignmentException exception = assertThrows(AlignmentException.class, () -> service.validateProcessedFile(0));
-        assertTrue(exception.getMessage(), exception.getMessage().startsWith(ToolPathValidator.ERROR_INCOMPLETE));
+        assertEquals(PcbAlignmentService.ERROR_NOT_PROCESSED, exception.getMessage());
         assertEquals(ValidationState.INVALID, service.getValidationState());
+    }
+
+    @Test
+    public void programShouldBeValidAgainWhenFailingProcessorIsRemoved() throws Exception {
+        service.alignLoadedFile(TRANSFORM, Code.G54);
+        CommandProcessor failing = failsOn("F100");
+        assertThrows(Exception.class, () -> backend.applyCommandProcessor(failing));
+
+        backend.removeCommandProcessor(failing);
+        service.validateProcessedFile(0);
+
+        assertEquals(ValidationState.VALID, service.getValidationState());
+        ToolPathValidator.validate(expectedPath(TRANSFORM), processedPath(), 0.001, 0);
     }
 
     @Test

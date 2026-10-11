@@ -302,24 +302,54 @@ public class PcbJobProtectionTest {
     }
 
     @Test
-    public void partlyProcessedAlignedProgramShouldNotBeSent() throws Exception {
+    public void alignedProgramThatCouldNotBeProcessedShouldNotBeSent() throws Exception {
         service.alignLoadedFile(TRANSFORM, Code.G54);
 
-        // The backend keeps the part of the program that was processed before the failure
+        // The backend does not keep any of the program when processing fails
         assertThrows(Exception.class, () -> backend.applyCommandProcessor(failsOn("F100")));
+        assertTrue(service.getApproval().isEmpty());
         assertThrows(AlignmentException.class, () -> service.validateProcessedFile(0));
 
-        assertSendRejected(PcbAlignmentService.ERROR_NOT_APPROVED);
+        assertSendRejected(GUIBackend.ERROR_PROGRAM_NOT_PROCESSED);
     }
 
     @Test
-    public void partlyProcessedAlignedProgramShouldNotBeSentEvenIfTheServiceWasNotTold() throws Exception {
+    public void alignedProgramThatCouldNotBeProcessedShouldNotBeSentEvenIfTheServiceWasNotTold() throws Exception {
         service.alignLoadedFile(TRANSFORM, Code.G54);
         backend.removeUGSEventListener(service);
 
         assertThrows(Exception.class, () -> backend.applyCommandProcessor(failsOn("F100")));
 
+        assertTrue(service.getApproval().isPresent());
+        assertSendRejected(GUIBackend.ERROR_PROGRAM_NOT_PROCESSED);
+    }
+
+    @Test
+    public void alignedProgramShouldNotBeSentWithEarlierApprovalAfterFailedProcessingIsRecovered() throws Exception {
+        service.alignLoadedFile(TRANSFORM, Code.G54);
+        backend.removeUGSEventListener(service);
+        CommandProcessor failing = failsOn("F100");
+        assertThrows(Exception.class, () -> backend.applyCommandProcessor(failing));
+
+        // The program can be processed again, but not to what was approved
+        backend.removeCommandProcessor(failing);
+        backend.applyCommandProcessor(createLevelerProcessors());
+
         assertSendRejected(PcbAlignmentService.ERROR_PROCESSED_CHANGED);
+    }
+
+    @Test
+    public void alignedProgramShouldBeSentAfterFailedProcessingIsRecoveredAndValidated() throws Exception {
+        service.alignLoadedFile(TRANSFORM, Code.G54);
+        CommandProcessor failing = failsOn("F100");
+        assertThrows(Exception.class, () -> backend.applyCommandProcessor(failing));
+        assertThrows(JobValidationException.class, () -> backend.send());
+
+        backend.removeCommandProcessor(failing);
+        service.validateProcessedFile(0);
+        backend.send();
+
+        assertSent(1);
     }
 
     // Aligned programs that have been changed
