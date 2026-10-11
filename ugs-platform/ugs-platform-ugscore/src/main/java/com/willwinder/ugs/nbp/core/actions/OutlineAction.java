@@ -32,6 +32,7 @@ import com.willwinder.universalgcodesender.model.UnitUtils;
 import com.willwinder.universalgcodesender.model.events.ControllerStateEvent;
 import com.willwinder.universalgcodesender.model.events.FileStateEvent;
 import com.willwinder.universalgcodesender.services.LookupService;
+import com.willwinder.universalgcodesender.services.jobvalidation.JobType;
 import com.willwinder.universalgcodesender.types.GcodeCommand;
 import com.willwinder.universalgcodesender.uielements.helpers.LoaderDialogHelper;
 import com.willwinder.universalgcodesender.utils.GUIHelpers;
@@ -86,7 +87,11 @@ public final class OutlineAction extends ProgramAction implements UGSEventListen
     private final transient BackendAPI backend;
 
     public OutlineAction() {
-        this.backend = LookupService.lookup(BackendAPI.class);
+        this(LookupService.lookup(BackendAPI.class));
+    }
+
+    public OutlineAction(BackendAPI backend) {
+        this.backend = backend;
         this.backend.addUGSEventListener(this);
 
         putValue("iconBase", ICON_BASE);
@@ -121,14 +126,25 @@ public final class OutlineAction extends ProgramAction implements UGSEventListen
                 List<GcodeCommand> gcodeCommands = generateOutlineCommands(gcodeFile);
 
                 LOGGER.finest("Sending the outline to the controller");
-                backend.getController().queueStream(new SimpleGcodeStreamReader(gcodeCommands));
-                backend.getController().beginStreaming();
+                sendOutline(gcodeFile, gcodeCommands);
             } catch (Exception ex) {
                 GUIHelpers.displayErrorDialog(ex.getLocalizedMessage());
             } finally {
                 LoaderDialogHelper.closeDialog();
             }
         });
+    }
+
+    /**
+     * Streams the outline to the controller. The outline does not go through {@link BackendAPI#send()},
+     * so it asks if the job may be started in the same way as the backend does for a program.
+     *
+     * @param processedGcodeFile the processed program that the outline was generated from
+     */
+    void sendOutline(File processedGcodeFile, List<GcodeCommand> gcodeCommands) throws Exception {
+        backend.getJobValidationService().validate(JobType.OUTLINE, backend.getGcodeFile(), processedGcodeFile);
+        backend.getController().queueStream(new SimpleGcodeStreamReader(gcodeCommands));
+        backend.getController().beginStreaming();
     }
 
     public List<GcodeCommand> generateOutlineCommands(File gcodeFile) throws IOException, GcodeParserException {

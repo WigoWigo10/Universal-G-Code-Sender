@@ -36,6 +36,8 @@ import com.willwinder.universalgcodesender.model.events.FileStateEvent;
 import com.willwinder.universalgcodesender.services.BackendFileLoader;
 import com.willwinder.universalgcodesender.services.FileLoader;
 import com.willwinder.universalgcodesender.services.LookupService;
+import com.willwinder.universalgcodesender.services.jobvalidation.JobRequest;
+import com.willwinder.universalgcodesender.services.jobvalidation.JobValidationException;
 import com.willwinder.universalgcodesender.utils.GUIHelpers;
 import com.willwinder.universalgcodesender.utils.GcodeStreamReader;
 import com.willwinder.universalgcodesender.utils.IGcodeStreamReader;
@@ -68,6 +70,18 @@ public class PcbAlignmentService implements UGSEventListener {
         INVALID
     }
 
+    /**
+     * The record of a validated program. A job is only the approved one if all of it is the same when
+     * the job is started: the aligned program, the processed program and the work coordinate system.
+     *
+     * @param alignedFile     the aligned program that was loaded
+     * @param metadata        identifies the aligned program, its original and the work coordinate system
+     * @param processedSha256 the hash of the processed program that was validated, which is what may be sent
+     * @param maxZChangeMM    the change of Z that was accepted
+     */
+    public record Approval(File alignedFile, AlignmentMetadata metadata, String processedSha256, double maxZChangeMM) {
+    }
+
     public static final String ALIGNED_FILE_SUFFIX = "_aligned";
 
     public static final String ERROR_NO_FILE = "There is no program loaded to align.";
@@ -77,6 +91,10 @@ public class PcbAlignmentService implements UGSEventListener {
     public static final String ERROR_NOT_ALIGNED = "The loaded program is not an aligned program, or it has been changed since it was aligned: ";
     public static final String ERROR_NOT_PROCESSED = "The aligned program has not been processed for sending.";
     public static final String ERROR_LOAD = "The aligned program could not be loaded: ";
+    public static final String ERROR_CHANGED_DURING_VALIDATION = "The program was processed again while it was being validated, validate it again.";
+    public static final String ERROR_NOT_APPROVED = "The aligned program has not been validated. Validate it with the PCB tools before it is started.";
+    public static final String ERROR_PROCESSED_CHANGED = "The aligned program has been processed again since it was validated, for instance by the auto leveler. Validate it again with the PCB tools before it is started.";
+    public static final String ERROR_WORK_COORDINATE_SYSTEM_UNKNOWN = "The work coordinate system of the machine is not known, so the aligned program can not be started. It must be ";
 
     /**
      * The largest accepted distance in millimeters between the program that will be sent and the
@@ -90,6 +108,7 @@ public class PcbAlignmentService implements UGSEventListener {
     private final AlignedGcodeExporter exporter = new AlignedGcodeExporter();
 
     private ValidationState validationState = ValidationState.NOT_VALIDATED;
+    private Approval approval;
     private File pendingFile;
     private boolean isLoading;
 
@@ -117,6 +136,46 @@ public class PcbAlignmentService implements UGSEventListener {
 
     public synchronized ValidationState getValidationState() {
         return validationState;
+    }
+
+    /**
+     * Returns the approval of the latest validated program, which may no longer be the loaded one
+     */
+    public synchronized Optional<Approval> getApproval() {
+        return Optional.ofNullable(approval);
+    }
+
+    /**
+     * Verifies that a job that is about to be started is the program that was validated. Nothing of
+     * this relies on having been told about changes: the aligned program is read and verified again,
+     * the processed program is identified by its content, and the machine is asked for its work
+     * coordinate system.
+     *
+     * @throws AlignmentException if the job is not the validated program
+     */
+    public synchronized void verifyApproved(JobRequest request) throws AlignmentException {
+        AlignmentMetadata metadata = readVerifiedMetadata(request.getGcodeFile());
+        if (approval == null || !isSameFile(approval.alignedFile(), request.getGcodeFile()) || !approval.metadata().equals(metadata)) {
+            throw new AlignmentException(ERROR_NOT_APPROVED);
+        }
+
+        String processedSha256;
+        try {
+            processedSha256 = request.getProcessedSha256();
+        } catch (JobValidationException e) {
+            throw new AlignmentException(e.getMessage(), e);
+        }
+        if (!approval.processedSha256().equals(processedSha256)) {
+            throw new AlignmentException(ERROR_PROCESSED_CHANGED);
+        }
+
+        GcodeState state = backend.isConnected() ? backend.getGcodeState() : null;
+        if (state == null || state.offset == null) {
+            throw new AlignmentException(ERROR_WORK_COORDINATE_SYSTEM_UNKNOWN + metadata.workCoordinateSystem());
+        }
+        if (state.offset != metadata.workCoordinateSystem()) {
+            throw new AlignmentException(ERROR_WORK_COORDINATE_SYSTEM + state.offset + " instead of " + metadata.workCoordinateSystem());
+        }
     }
 
     /**
@@ -211,6 +270,7 @@ public class PcbAlignmentService implements UGSEventListener {
         } else {
             // The program has been replaced or processed again, such as when the auto leveler is applied
             validationState = ValidationState.NOT_VALIDATED;
+            approval = null;
         }
     }
 
@@ -227,6 +287,7 @@ public class PcbAlignmentService implements UGSEventListener {
     private void rejectLoadedFile() {
         pendingFile = null;
         validationState = ValidationState.INVALID;
+        approval = null;
         try {
             backend.unsetGcodeFile();
         } catch (Exception e) {
@@ -239,15 +300,20 @@ public class PcbAlignmentService implements UGSEventListener {
     }
 
     /**
-     * Validates the program that will be sent against the loaded aligned program. This must be
-     * done again after anything has been applied to the program, such as the auto leveler: if a
-     * processor fails the backend is left with the part of the program that it had processed.
+     * Validates the program that will be sent against the loaded aligned program, and approves it
+     * for sending if it is valid. This must be done again after anything has been applied to the
+     * program, such as the auto leveler: if a processor fails the backend is left with the part of
+     * the program that it had processed.
+     * <p>
+     * The approval is for the content of the processed program that was validated. The job validator
+     * only lets a job start if it is streamed from that same content.
      *
      * @param maxZChangeMM the largest accepted change of Z, zero if nothing may have changed Z
      * @throws AlignmentException if the program that will be sent is not the complete aligned program
      */
     public synchronized void validateProcessedFile(double maxZChangeMM) throws AlignmentException {
         validationState = ValidationState.INVALID;
+        approval = null;
         File loadedFile = backend.getGcodeFile();
         if (loadedFile == null) {
             throw new AlignmentException(ERROR_NO_FILE);
@@ -261,11 +327,18 @@ public class PcbAlignmentService implements UGSEventListener {
         }
 
         try {
+            String processedSha256 = JobRequest.sha256(processedFile);
             List<Position> expected = ToolPathValidator.trace(Files.readAllLines(loadedFile.toPath(), StandardCharsets.UTF_8));
             List<Position> processed = ToolPathValidator.trace(readProcessedCommands(processedFile));
             ToolPathValidator.validate(expected, processed, VALIDATION_TOLERANCE_MM, maxZChangeMM);
+
+            // What was validated must be what is approved
+            if (!processedSha256.equals(JobRequest.sha256(processedFile)) || !metadata.equals(readVerifiedMetadata(loadedFile))) {
+                throw new AlignmentException(ERROR_CHANGED_DURING_VALIDATION);
+            }
+            approval = new Approval(loadedFile.getAbsoluteFile(), metadata, processedSha256, maxZChangeMM);
             validationState = ValidationState.VALID;
-        } catch (IOException | GcodeParserException | GcodeStreamReader.NotGcodeStreamFile e) {
+        } catch (IOException | GcodeParserException | GcodeStreamReader.NotGcodeStreamFile | JobValidationException e) {
             throw new AlignmentException(ERROR_NOT_PROCESSED, e);
         }
     }

@@ -28,6 +28,7 @@ import com.willwinder.universalgcodesender.listeners.ControllerState;
 import com.willwinder.universalgcodesender.listeners.MessageListener;
 import com.willwinder.universalgcodesender.listeners.MessageType;
 import com.willwinder.universalgcodesender.services.interceptor.CommandInterceptorService;
+import com.willwinder.universalgcodesender.services.jobvalidation.JobValidationService;
 import com.willwinder.universalgcodesender.types.GcodeCommand;
 import com.willwinder.universalgcodesender.utils.Settings;
 
@@ -190,6 +191,12 @@ public interface BackendAPI extends BackendAPIReadOnly {
      * @return the command interceptor service
      */
     CommandInterceptorService getInterceptorService();
+
+    /**
+     * Returns the service that decides if a job may be started. Anything that streams a job from the
+     * loaded program to the controller without using {@link #send()} must ask it first.
+     */
+    JobValidationService getJobValidationService();
 
     /**
      * Returns the current controller state. If no controller is loaded or if it

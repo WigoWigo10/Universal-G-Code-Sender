@@ -48,6 +48,9 @@ import com.willwinder.universalgcodesender.types.GcodeCommand;
 import com.willwinder.universalgcodesender.utils.FirmwareUtils;
 import com.willwinder.universalgcodesender.utils.GcodeFileWriter;
 import com.willwinder.universalgcodesender.services.interceptor.CommandInterceptorService;
+import com.willwinder.universalgcodesender.services.jobvalidation.JobType;
+import com.willwinder.universalgcodesender.services.jobvalidation.JobValidationException;
+import com.willwinder.universalgcodesender.services.jobvalidation.JobValidationService;
 import com.willwinder.universalgcodesender.services.interceptor.ToolChangeInterceptor;
 import com.willwinder.universalgcodesender.utils.GcodeStreamReader;
 import com.willwinder.universalgcodesender.utils.GcodeStreamWriter;
@@ -96,6 +99,7 @@ public class GUIBackend implements BackendAPI {
     private GcodeStreamReader gcodeStream;
 
     private final CommandInterceptorService interceptorService;
+    private final JobValidationService jobValidationService = new JobValidationService();
 
     public GUIBackend() {
         this(new UGSEventDispatcher());
@@ -110,6 +114,11 @@ public class GUIBackend implements BackendAPI {
 
     public CommandInterceptorService getInterceptorService() {
         return interceptorService;
+    }
+
+    @Override
+    public JobValidationService getJobValidationService() {
+        return jobValidationService;
     }
 
     /////////////
@@ -515,13 +524,21 @@ public class GUIBackend implements BackendAPI {
             if (gcodeStream != null) {
                 gcodeStream.close();
             }
-            gcodeStream = new GcodeStreamReader(this.processedGcodeFile, getCommandCreator());
+
+            // The same file is opened for streaming and validated, also if the program is processed again meanwhile
+            File jobFile = this.processedGcodeFile;
+            gcodeStream = new GcodeStreamReader(jobFile, getCommandCreator());
 
             // This will throw an exception and prevent that other stuff from
             // happening (clearing the table before it is ready for clearing.
             controller.isReadyToStreamFile();
+            jobValidationService.validate(JobType.PROGRAM, this.gcodeFile, jobFile);
             controller.queueStream(interceptorService.beginJob(gcodeStream));
             controller.beginStreaming();
+        } catch (JobValidationException e) {
+            // The message tells the operator why the job was not started
+            logger.log(Level.WARNING, "The job was not started: {0}", e.getMessage());
+            throw e;
         } catch (Exception e) {
             logger.log(Level.SEVERE, Localization.getString("mainWindow.error.startingStream"), e);
             throw new Exception(Localization.getString("mainWindow.error.startingStream"), e);

@@ -59,6 +59,13 @@ public class RunFromService implements UGSEventListener {
         }
     }
 
+    /**
+     * Returns the line that the program will run from, or zero if it runs from the beginning
+     */
+    public int getLineNumber() {
+        return runFromProcessor.getLineNumber();
+    }
+
     public void addListener(RunFromServiceListener runFromServiceListener) {
         listeners.add(runFromServiceListener);
     }
