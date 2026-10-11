@@ -539,6 +539,49 @@ public class PcbJobProtectionTest {
         verify(otherController, never()).queueStream(any());
     }
 
+    // Exporting the processed program
+
+    @Test
+    public void exportShouldNotAffectTheApprovalOfAnAlignedProgram() throws Exception {
+        service.alignLoadedFile(TRANSFORM, Code.G54);
+        Approval approval = service.getApproval().orElseThrow();
+        File processedFile = backend.getProcessedGcodeFile();
+
+        backend.preprocessAndExportToFile(new File(folder.getRoot(), "exported.nc"));
+
+        assertEquals(PcbAlignmentService.ValidationState.VALID, service.getValidationState());
+        assertEquals(approval, service.getApproval().orElseThrow());
+        assertEquals(processedFile, backend.getProcessedGcodeFile());
+        assertEquals(approval.processedSha256(), JobRequest.sha256(processedFile));
+        assertEquals(approval.metadata(), AlignmentMetadata.read(alignedFile).orElseThrow());
+        backend.send();
+        assertSent(1);
+    }
+
+    @Test
+    public void exportOverAlignedProgramShouldBeRejected() throws Exception {
+        service.alignLoadedFile(TRANSFORM, Code.G54);
+        Approval approval = service.getApproval().orElseThrow();
+
+        assertThrows(Exception.class, () -> backend.preprocessAndExportToFile(alignedFile));
+
+        assertEquals(approval.metadata(), AlignmentMetadata.read(alignedFile).orElseThrow());
+        backend.send();
+        assertSent(1);
+    }
+
+    @Test
+    public void exportedAlignedProgramShouldNotBeSentAsAValidatedProgram() throws Exception {
+        service.alignLoadedFile(TRANSFORM, Code.G54);
+        File exported = new File(folder.getRoot(), "exported.nc");
+        backend.preprocessAndExportToFile(exported);
+
+        backend.setGcodeFile(exported);
+
+        assertTrue(AlignmentMetadata.hasAlignmentHeader(exported));
+        assertSendRejected(PcbAlignmentService.ERROR_NOT_ALIGNED);
+    }
+
     // Pause and resume
 
     @Test

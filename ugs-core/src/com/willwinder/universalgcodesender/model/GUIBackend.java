@@ -54,6 +54,7 @@ import com.willwinder.universalgcodesender.services.jobvalidation.JobValidationS
 import com.willwinder.universalgcodesender.services.interceptor.ToolChangeInterceptor;
 import com.willwinder.universalgcodesender.utils.GcodeStreamReader;
 import com.willwinder.universalgcodesender.utils.GcodeStreamWriter;
+import com.willwinder.universalgcodesender.utils.IGcodeStreamReader;
 import com.willwinder.universalgcodesender.utils.IGcodeWriter;
 import com.willwinder.universalgcodesender.utils.Settings;
 import com.willwinder.universalgcodesender.utils.Settings.FileStats;
@@ -67,6 +68,8 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.StandardCopyOption;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -84,7 +87,10 @@ import java.util.stream.Stream;
 public class GUIBackend implements BackendAPI {
     private static final Logger logger = Logger.getLogger(GUIBackend.class.getName());
 
-    public static final String ERROR_PROGRAM_NOT_PROCESSED = "The program can not be started because it could not be processed. Load it again, or remove what was applied to it.";
+    public static final String ERROR_EXPORT_NOT_PROCESSED = "There is no processed program to export.";
+    public static final String ERROR_EXPORT_NO_TARGET = "There is no file to export the program to";
+    public static final String ERROR_EXPORT_OVER_PROGRAM = "The program can not be exported over the loaded program or over a processed program: ";
+    public static final String ERROR_PROGRAM_NOT_PROCESSED ="The program can not be started because it could not be processed. Load it again, or remove what was applied to it.";
     private static final String NEW_LINE = "\n    ";
 
     private final MessageService messageService = new MessageService();
@@ -164,8 +170,78 @@ public class GUIBackend implements BackendAPI {
 
     @Override
     public void preprocessAndExportToFile(File f) throws Exception {
-        try (IGcodeWriter gcw = new GcodeFileWriter(this.processedGcodeFile)) {
-            preprocessAndExportToFile(this.gcp, this.getGcodeFile(), gcw);
+        // The processed program is exported as it is, which is what would be sent. It is only read, so
+        // this can be done while it is being sent and it does not disturb the parser of the loaded program.
+        File processedFile = this.processedGcodeFile;
+        if (processedFile == null) {
+            throw new IOException(ERROR_EXPORT_NOT_PROCESSED);
+        }
+        File target = getExportTarget(f, processedFile);
+
+        // The program is written to a file of its own which only replaces the target when all of it has been
+        // written and verified, so a failure never leaves a part of the program or destroys an earlier export
+        File temporaryFile = File.createTempFile(target.getName() + ".", ".tmp", target.getParentFile());
+        try {
+            int numberOfRows = 0;
+            try (IGcodeStreamReader reader = new GcodeStreamReader(processedFile, new DefaultCommandCreator());
+                 IGcodeWriter writer = new GcodeFileWriter(temporaryFile)) {
+                while (reader.getNumRowsRemaining() > 0) {
+                    writer.addLine(reader.getNextCommand());
+                    numberOfRows++;
+                }
+            }
+            verifyExportedFile(temporaryFile, numberOfRows);
+
+            try {
+                java.nio.file.Files.move(temporaryFile.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                java.nio.file.Files.move(temporaryFile.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            java.nio.file.Files.deleteIfExists(temporaryFile.toPath());
+        }
+    }
+
+    /**
+     * Returns the file to export to, which must not be any of the files that the backend works with
+     */
+    private File getExportTarget(File f, File processedFile) throws IOException {
+        if (f == null) {
+            throw new IOException(ERROR_EXPORT_NO_TARGET);
+        }
+
+        File target = f.getCanonicalFile();
+        File directory = target.getParentFile();
+        if (target.isDirectory() || directory == null || !directory.isDirectory()) {
+            throw new FileNotFoundException(ERROR_EXPORT_NO_TARGET + ": " + f);
+        }
+
+        // Processed programs are kept in the temporary directory, also the one of a job that is being sent
+        boolean isLoadedProgram = this.gcodeFile != null && target.equals(this.gcodeFile.getCanonicalFile());
+        boolean isProcessedProgram = target.equals(processedFile.getCanonicalFile())
+                || (this.tempDir != null && directory.equals(this.tempDir.getCanonicalFile()));
+        if (isLoadedProgram || isProcessedProgram) {
+            throw new IOException(ERROR_EXPORT_OVER_PROGRAM + f);
+        }
+        return target;
+    }
+
+    /**
+     * Verifies that the exported file has all the rows of the program, as the writer does not report if it
+     * fails to write.
+     *
+     * @param file         the file that was written
+     * @param numberOfRows the number of rows that were written
+     * @throws IOException if the file is not the complete program
+     */
+    protected void verifyExportedFile(File file, int numberOfRows) throws IOException {
+        long writtenLines;
+        try (Stream<String> lines = java.nio.file.Files.lines(file.toPath(), StandardCharsets.UTF_8)) {
+            writtenLines = lines.count();
+        }
+
+        if (writtenLines != numberOfRows) {
+            throw new IOException("The exported program is incomplete, it has " + writtenLines + " of " + numberOfRows + " rows: " + file);
         }
     }
 

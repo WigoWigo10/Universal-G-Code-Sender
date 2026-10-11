@@ -118,6 +118,11 @@ public interface BackendAPI extends BackendAPIReadOnly {
     /**
      * Process the currently loaded gcode file and export it to a file.
      * Intended primarily as "save and export" style preprocessor option.
+     * <p>
+     * The file is only written if the whole program could be exported, and a file that already exists
+     * is then replaced. The program can not be exported over the loaded program or over a processed
+     * program that the backend works with.
+     *
      * @param f location to export processed gcode
      */
     void preprocessAndExportToFile(File f) throws Exception;
