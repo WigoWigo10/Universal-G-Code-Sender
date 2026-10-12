@@ -23,6 +23,7 @@ import com.willwinder.ugs.nbp.pcb.gcode.AlignedGcodeFile;
 import com.willwinder.ugs.nbp.pcb.gcode.AlignmentException;
 import com.willwinder.ugs.nbp.pcb.gcode.AlignmentMetadata;
 import com.willwinder.ugs.nbp.pcb.gcode.ToolPathValidator;
+import com.willwinder.ugs.nbp.pcb.heightmap.Compensation;
 import com.willwinder.ugs.nbp.pcb.geometry.RigidTransform2D;
 import com.willwinder.universalgcodesender.gcode.GcodeState;
 import com.willwinder.universalgcodesender.gcode.util.Code;
@@ -42,7 +43,6 @@ import com.willwinder.universalgcodesender.types.GcodeCommand;
 import com.willwinder.universalgcodesender.utils.GUIHelpers;
 import com.willwinder.universalgcodesender.utils.GcodeStreamReader;
 import com.willwinder.universalgcodesender.utils.IGcodeStreamReader;
-import org.apache.commons.io.FilenameUtils;
 
 import java.io.File;
 import java.io.IOException;
@@ -52,6 +52,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * Aligns the program that is loaded in the backend. The aligned program is written to a file of
@@ -79,8 +80,9 @@ public class PcbAlignmentService implements UGSEventListener {
      * @param metadata        identifies the aligned program, its original and the work coordinate system
      * @param processedSha256 the hash of the processed program that was validated, which is what may be sent
      * @param maxZChangeMM    the change of Z that was accepted
+     * @param compensationId  identifies the height map that the program was validated with, null if it has none applied
      */
-    public record Approval(File alignedFile, AlignmentMetadata metadata, String processedSha256, double maxZChangeMM) {
+    public record Approval(File alignedFile, AlignmentMetadata metadata, String processedSha256, double maxZChangeMM, String compensationId) {
     }
 
     /**
@@ -134,6 +136,12 @@ public class PcbAlignmentService implements UGSEventListener {
     private boolean loadedWhileOpening;
 
     /**
+     * Tells which height map is applied to the loaded program, if any. Read without holding on to
+     * anything of its owner, as it is asked while this service is busy validating.
+     */
+    private volatile Supplier<Optional<Compensation>> compensationSource = Optional::empty;
+
+    /**
      * Creates a service that opens the aligned program in the same way as the application opens files,
      * which in the platform is in the editor, and shows an error dialog if it turns out to be invalid.
      */
@@ -153,6 +161,15 @@ public class PcbAlignmentService implements UGSEventListener {
         this.fileLoader = fileLoader;
         this.errorHandler = errorHandler;
         this.backend.addUGSEventListener(this);
+    }
+
+    /**
+     * @param compensationSource tells which height map is applied to the loaded program, if any. The
+     *                           processed program is then only valid if it follows the aligned tool
+     *                           path on that surface.
+     */
+    public void setCompensationSource(Supplier<Optional<Compensation>> compensationSource) {
+        this.compensationSource = compensationSource;
     }
 
     public synchronized ValidationState getValidationState() {
@@ -261,8 +278,10 @@ public class PcbAlignmentService implements UGSEventListener {
      * Returns the file that the aligned program of an original program is written to, which is next to it
      */
     public File getAlignedFile(File source) {
-        String extension = FilenameUtils.getExtension(source.getName());
-        String name = FilenameUtils.getBaseName(source.getName()) + ALIGNED_FILE_SUFFIX + (extension.isEmpty() ? "" : "." + extension);
+        int extensionStart = source.getName().lastIndexOf('.');
+        String baseName = extensionStart < 0 ? source.getName() : source.getName().substring(0, extensionStart);
+        String extension = extensionStart < 0 ? "" : source.getName().substring(extensionStart + 1);
+        String name = baseName + ALIGNED_FILE_SUFFIX + (extension.isEmpty() ? "" : "." + extension);
         return new File(source.getAbsoluteFile().getParentFile(), name);
     }
 
@@ -426,13 +445,19 @@ public class PcbAlignmentService implements UGSEventListener {
 
             List<Position> expected = ToolPathValidator.trace(loadedLines);
             List<Position> processed = ToolPathValidator.trace(processedCommands.stream().map(GcodeCommand::getCommandString).toList());
-            ToolPathValidator.validate(expected, processed, VALIDATION_TOLERANCE_MM, maxZChangeMM);
+            Optional<Compensation> compensation = compensationSource.get();
+            if (compensation.isPresent()) {
+                ToolPathValidator.validate(expected, processed, VALIDATION_TOLERANCE_MM, maxZChangeMM, compensation.get()::offsetAt);
+                ToolPathValidator.validateMoveLength(processed, compensation.get().maxSegmentLengthMM() + VALIDATION_TOLERANCE_MM, compensation.get().surface()::covers);
+            } else {
+                ToolPathValidator.validate(expected, processed, VALIDATION_TOLERANCE_MM, maxZChangeMM);
+            }
 
             // What was validated must be what is approved
             if (!processedSha256.equals(JobRequest.sha256(processedFile)) || !metadata.equals(readVerifiedMetadata(loadedFile))) {
                 throw new AlignmentException(ERROR_CHANGED_DURING_VALIDATION);
             }
-            approval = new Approval(loadedFile.getAbsoluteFile(), metadata, processedSha256, maxZChangeMM);
+            approval = new Approval(loadedFile.getAbsoluteFile(), metadata, processedSha256, maxZChangeMM, compensation.map(Compensation::id).orElse(null));
             validationState = ValidationState.VALID;
         } catch (IOException | GcodeParserException | GcodeStreamReader.NotGcodeStreamFile | JobValidationException e) {
             throw new AlignmentException(ERROR_NOT_PROCESSED, e);

@@ -29,6 +29,8 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import java.util.function.BiPredicate;
+import java.util.function.DoubleBinaryOperator;
 
 /**
  * Verifies that a processed program, which is what will be sent to the machine, still follows
@@ -41,6 +43,7 @@ public class ToolPathValidator {
     public static final String ERROR_NO_MOVES = "The program has no moves to validate.";
     public static final String ERROR_OFF_PATH = "The processed program leaves the expected tool path at ";
     public static final String ERROR_INCOMPLETE = "The processed program ends before the expected program does, it stops at ";
+    public static final String ERROR_NOT_SPLIT = "The processed program has a move that is too long to follow the measured surface, it ends at ";
 
     private ToolPathValidator() {
     }
@@ -106,6 +109,41 @@ public class ToolPathValidator {
 
         if (!current.contains(last)) {
             throw new AlignmentException(ERROR_INCOMPLETE + format(processed.get(processed.size() - 1)));
+        }
+    }
+
+    /**
+     * Validates a program that had its Z adjusted to a measured surface. Every position of it must
+     * be on the expected tool path when the adjustment that belongs to that position is taken off
+     * again, so a program that was adjusted with other heights, or twice, is not valid.
+     *
+     * @param zOffset gives what was to be added to Z at an X and Y in millimeters
+     * @throws AlignmentException if the processed program does not follow the expected tool path on the surface
+     */
+    public static void validate(List<Position> expected, List<Position> processed, double toleranceMM, double maxZChangeMM, DoubleBinaryOperator zOffset) throws AlignmentException {
+        List<Position> withoutOffset = processed.stream()
+                .map(position -> new Position(position.getX(), position.getY(), position.getZ() - zOffset.applyAsDouble(position.getX(), position.getY()), Units.MM))
+                .toList();
+        validate(expected, withoutOffset, toleranceMM, maxZChangeMM);
+    }
+
+    /**
+     * Verifies that the moves over a measured surface are short enough to follow it. The Z of a move is
+     * only adjusted where it ends, so a long move would cross the surface in a straight line.
+     *
+     * @param processed   the positions of the processed program
+     * @param maxLengthMM the longest accepted move in the XY plane
+     * @param isOnSurface tells if an X and Y in millimeters is where the surface was measured
+     * @throws AlignmentException if a move over the surface is longer
+     */
+    public static void validateMoveLength(List<Position> processed, double maxLengthMM, BiPredicate<Double, Double> isOnSurface) throws AlignmentException {
+        for (int i = 1; i < processed.size(); i++) {
+            Position start = processed.get(i - 1);
+            Position end = processed.get(i);
+            boolean isLong = Math.hypot(end.getX() - start.getX(), end.getY() - start.getY()) > maxLengthMM;
+            if (isLong && (isOnSurface.test(start.getX(), start.getY()) || isOnSurface.test(end.getX(), end.getY()))) {
+                throw new AlignmentException(ERROR_NOT_SPLIT + format(end));
+            }
         }
     }
 

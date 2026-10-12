@@ -19,8 +19,10 @@
 package com.willwinder.ugs.nbp.pcb;
 
 import com.willwinder.ugs.nbp.pcb.service.PcbAlignmentService;
+import com.willwinder.ugs.nbp.pcb.service.PcbHeightMapService;
 import com.willwinder.ugs.nbp.pcb.service.PcbJobValidator;
 import com.willwinder.ugs.nbp.pcb.ui.PcbAlignmentTopComponent;
+import com.willwinder.ugs.nbp.pcb.ui.PcbHeightMapTopComponent;
 import com.willwinder.universalgcodesender.model.BackendAPI;
 import com.willwinder.universalgcodesender.services.LookupService;
 import com.willwinder.universalgcodesender.services.RunFromService;
@@ -47,6 +49,11 @@ public class PcbToolsStartup implements Runnable {
      */
     public static final String OPEN_ALIGNMENT_WINDOW_PROPERTY = "ugs.pcb.alignment.open";
 
+    /**
+     * A system property for developers, which opens the height map window when the application has started
+     */
+    public static final String OPEN_HEIGHT_MAP_WINDOW_PROPERTY = "ugs.pcb.heightmap.open";
+
     @Override
     public void run() {
         BackendAPI backend = LookupService.lookup(BackendAPI.class);
@@ -54,14 +61,21 @@ public class PcbToolsStartup implements Runnable {
         register(backend, runFromService::getLineNumber);
 
         if (Boolean.getBoolean(OPEN_ALIGNMENT_WINDOW_PROPERTY)) {
-            WindowManager.getDefault().invokeWhenUIReady(() -> {
-                TopComponent window = WindowManager.getDefault().findTopComponent(PcbAlignmentTopComponent.PREFERRED_ID);
-                if (window != null) {
-                    window.open();
-                    window.requestActive();
-                }
-            });
+            openWhenReady(PcbAlignmentTopComponent.PREFERRED_ID);
         }
+        if (Boolean.getBoolean(OPEN_HEIGHT_MAP_WINDOW_PROPERTY)) {
+            openWhenReady(PcbHeightMapTopComponent.PREFERRED_ID);
+        }
+    }
+
+    private static void openWhenReady(String preferredId) {
+        WindowManager.getDefault().invokeWhenUIReady(() -> {
+            TopComponent window = WindowManager.getDefault().findTopComponent(preferredId);
+            if (window != null) {
+                window.open();
+                window.requestActive();
+            }
+        });
     }
 
     /**
@@ -71,6 +85,7 @@ public class PcbToolsStartup implements Runnable {
     static PcbAlignmentService register(BackendAPI backend, IntSupplier runFromLine) {
         PcbAlignmentService alignmentService = new PcbAlignmentService(backend);
         LookupService.register(alignmentService);
+        LookupService.register(new PcbHeightMapService(backend, alignmentService));
         backend.getJobValidationService().register(new PcbJobValidator(alignmentService, runFromLine));
         LOGGER.info("Registered the job validator for aligned PCB programs");
         return alignmentService;

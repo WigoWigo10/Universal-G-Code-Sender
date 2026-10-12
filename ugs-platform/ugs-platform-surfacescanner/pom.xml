@@ -19,6 +19,7 @@
                 <extensions>true</extensions>
                 <configuration>
                     <publicPackages>
+                        <publicPackage>com.willwinder.ugs.platform.surfacescanner.renderable</publicPackage>
                     </publicPackages>
                 </configuration>
             </plugin>
