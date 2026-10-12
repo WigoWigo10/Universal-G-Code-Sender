@@ -33,7 +33,8 @@ Extend UGS with tools for PCB manufacturing.
 
 ### Visualizer Smoothness
 - Make the UGS Platform 3D visualizer feel closer to the UGS FX one.
-- Start by raising the frame rate cap (currently 15 fps active, 4 fps idle).
+- Done: 60 fps while interacting (4 fps idle), FX colors, grid and axes.
+- Multisampling makes the GLJPanel several times slower; lines are smoothed instead.
 - Keep CPU usage low while streaming G-code.
 - Later evaluate replacing immediate-mode drawing with vertex buffers.
 
