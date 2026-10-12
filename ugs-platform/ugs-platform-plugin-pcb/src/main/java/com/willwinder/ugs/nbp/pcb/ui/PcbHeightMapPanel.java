@@ -305,7 +305,7 @@ public class PcbHeightMapPanel extends JPanel implements PcbHeightMapService.Lis
     /**
      * A panel that is as wide as the scroll pane it is in, so its text is wrapped instead of scrolled
      */
-    private static class WidthTrackingPanel extends JPanel implements Scrollable {
+    static class WidthTrackingPanel extends JPanel implements Scrollable {
         WidthTrackingPanel(LayoutManager layout) {
             super(layout);
         }

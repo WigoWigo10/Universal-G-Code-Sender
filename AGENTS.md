@@ -27,6 +27,12 @@ Extend UGS with tools for PCB manufacturing.
 - Optimize safe Z retraction and probing intervals.
 - Preserve collision avoidance and machine limits.
 
+### Probing (conventional, regular grid)
+- Done: plan, limit verification, explicit state machine, checkpoints, simulation.
+- Tested only against a simulated machine. Real execution is disabled.
+- A second safety review is required before any real machine is moved:
+  firmware commands and answers, homing proof, sensor configuration.
+
 ### Job Recovery
 - Study the existing Run From feature.
 - Identify coordinate and modal-state risks.

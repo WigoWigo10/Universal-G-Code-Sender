@@ -118,7 +118,13 @@ public class GridHeightMapTest {
 
     @Test
     public void lastRowAndColumnMayBeCloserAsTheSurfaceScannerMakesThem() throws Exception {
-        GridHeightMap map = SyntheticSurface.heightMap(new ProbeArea(0, 0, 12, 7), 5, SyntheticSurface.BENT_BOARD);
+        List<Position> measured = new ArrayList<>();
+        for (double x : new double[]{0, 5, 10, 12}) {
+            for (double y : new double[]{0, 5, 7}) {
+                measured.add(new Position(x, y, SyntheticSurface.BENT_BOARD.applyAsDouble(x, y), Units.MM));
+            }
+        }
+        GridHeightMap map = GridHeightMap.of(measured);
 
         assertEquals(4, map.getColumns());
         assertEquals(3, map.getRows());
@@ -186,7 +192,14 @@ public class GridHeightMapTest {
      */
     @Test
     public void heightShouldBeTheSameAsTheMeshLevelerApplies() throws Exception {
-        GridHeightMap map = SyntheticSurface.heightMap(new ProbeArea(-7, 3, 36, 44), 5, SyntheticSurface.BENT_BOARD);
+        // As the surface scanner measures it: the last row and the last column are closer
+        List<Position> measured = new ArrayList<>();
+        for (double x : new double[]{-7, -2, 3, 8, 13, 18, 23, 28, 33, 36}) {
+            for (double y : new double[]{3, 8, 13, 18, 23, 28, 33, 38, 43, 44}) {
+                measured.add(new Position(x, y, SyntheticSurface.BENT_BOARD.applyAsDouble(x, y), Units.MM));
+            }
+        }
+        GridHeightMap map = GridHeightMap.of(measured);
         MeshLeveler leveler = new MeshLeveler(0, map.toMesh());
         Random random = new Random(7);
 
