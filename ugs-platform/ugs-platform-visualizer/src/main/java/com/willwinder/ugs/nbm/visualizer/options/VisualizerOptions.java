@@ -112,11 +112,11 @@ public class VisualizerOptions extends ArrayList<Option<?>> {
     public VisualizerOptions() {
 
         // GcodeRenderer clear color
-        add(getOption(VISUALIZER_OPTION_BG, "", new Color(220,235,255)));
+        add(getOption(VISUALIZER_OPTION_BG, "", new Color(211,211,211)));
 
         // Tool renderable
         add(getOption(VISUALIZER_OPTION_TOOL, Localization.getString(VISUALIZER_OPTION_TOOL_DESC), true));
-        add(getOption(VISUALIZER_OPTION_TOOL_COLOR, "", new Color(237,255,0)));
+        add(getOption(VISUALIZER_OPTION_TOOL_COLOR, "", new Color(255,166,0)));
 
         // GcodeModel renderable
         add(getOption(VISUALIZER_OPTION_MODEL, Localization.getString(VISUALIZER_OPTION_MODEL_DESC), true));
@@ -124,7 +124,8 @@ public class VisualizerOptions extends ArrayList<Option<?>> {
         add(getOption(VISUALIZER_OPTION_LINEAR_MIN_SPEED, "", new Color(204,255,255)));
         add(getOption(VISUALIZER_OPTION_SPINDLE_MAX_SPEED, "", new Color(0,0,158)));
         add(getOption(VISUALIZER_OPTION_SPINDLE_MIN_SPEED, "", new Color(204,255,255)));
-        add(getOption(VISUALIZER_OPTION_RAPID, "", new Color(204,204,0)));
+        // Darker than the yellow of the FX visualizer, which is hard to see on its gray background
+        add(getOption(VISUALIZER_OPTION_RAPID, "", new Color(201,120,0)));
         add(getOption(VISUALIZER_OPTION_ARC, "", new Color(178,34,34)));
         add(getOption(VISUALIZER_OPTION_PLUNGE, "", new Color(0,100,0)));
         add(getOption(VISUALIZER_OPTION_COMPLETE, "", new Color(190,190,190, 200)));
@@ -135,13 +136,13 @@ public class VisualizerOptions extends ArrayList<Option<?>> {
 
         // Grid renderable
         add(getOption(VISUALIZER_OPTION_GRID, Localization.getString(VISUALIZER_OPTION_GRID_DESC), true));
-        add(getOption(VISUALIZER_OPTION_XY_GRID, "", new Color(179,179,179, 29)));
-        add(getOption(VISUALIZER_OPTION_X, "", new Color(230,0,0)));
-        add(getOption(VISUALIZER_OPTION_Y, "", new Color(0,230,0)));
-        add(getOption(VISUALIZER_OPTION_Z, "", new Color(0,0,230)));
+        add(getOption(VISUALIZER_OPTION_XY_GRID, "", new Color(140,140,140)));
+        add(getOption(VISUALIZER_OPTION_X, "", new Color(217,51,51)));
+        add(getOption(VISUALIZER_OPTION_Y, "", new Color(51,179,64)));
+        add(getOption(VISUALIZER_OPTION_Z, "", new Color(64,115,230)));
 
         add(getOption(VISUALIZER_OPTION_PLANE, Localization.getString(VISUALIZER_OPTION_PLANE_DESC), true));
-        add(getOption(VISUALIZER_OPTION_PLANE_COLOR, "", new Color(77,77,77,29)));
+        add(getOption(VISUALIZER_OPTION_PLANE_COLOR, "", new Color(77,77,77,0)));
 
         // SizeDisplay renderable
         add(getOption(VISUALIZER_OPTION_SIZE_DISPLAY, Localization.getString(VISUALIZER_OPTION_SIZE_DISPLAY_DESC), true));

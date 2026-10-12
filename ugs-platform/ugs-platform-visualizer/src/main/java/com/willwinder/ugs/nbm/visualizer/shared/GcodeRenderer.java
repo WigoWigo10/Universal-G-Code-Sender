@@ -235,6 +235,11 @@ public class GcodeRenderer implements GLEventListener, IRenderableRegistrationSe
             gl.glBlendFunc(GL2.GL_SRC_ALPHA, GL2.GL_ONE_MINUS_SRC_ALPHA);
             gl.glEnable(GL.GL_DEPTH_TEST);
             gl.glDepthFunc(GL2.GL_LEQUAL);  // the type of depth test to do
+
+            // Smooth lines. Multisampling would also smooth the surfaces, but it makes this kind of panel
+            // several times slower.
+            gl.glEnable(GL.GL_LINE_SMOOTH);
+            gl.glHint(GL.GL_LINE_SMOOTH_HINT, GL.GL_NICEST);
             gl.glHint(GL2.GL_PERSPECTIVE_CORRECTION_HINT, GL2.GL_NICEST); // best perspective correction
 
             // init lighting

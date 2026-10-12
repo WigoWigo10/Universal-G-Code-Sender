@@ -38,6 +38,7 @@ import com.willwinder.universalgcodesender.utils.Settings;
 import com.willwinder.universalgcodesender.utils.Settings.FileStats;
 
 import javax.swing.SwingUtilities;
+import javax.swing.Timer;
 import java.awt.GraphicsConfiguration;
 import java.awt.GraphicsEnvironment;
 import java.awt.Point;
@@ -62,6 +63,7 @@ import java.util.prefs.PreferenceChangeListener;
 public class RendererInputHandler implements
         WindowListener, MouseWheelListener, MouseMotionListener,
         MouseListener, KeyListener, PreferenceChangeListener, UGSEventListener {
+    private static final int WHEEL_IDLE_DELAY_MS = 400;
     private final int highFps;
     private final int lowFps;
     private final GcodeRenderer gcodeRenderer;
@@ -71,6 +73,9 @@ public class RendererInputHandler implements
     private final SizeDisplay sizeDisplay;
     private final Selection selection;
     private final Settings settings;
+    private final Timer idleTimer;
+    private boolean interacting = false;
+    private int currentFps = -1;
     private boolean selecting = false;
     private Position selectionStart = null;
     private Position selectionEnd = null;
@@ -82,6 +87,14 @@ public class RendererInputHandler implements
         settings = backend.getSettings();
         this.highFps = highFps;
         this.lowFps = lowFps;
+
+        // The mouse wheel has no event for its end, so the frame rate is lowered a moment after its last movement
+        idleTimer = new Timer(WHEEL_IDLE_DELAY_MS, event -> {
+            if (!interacting) {
+                setFPS(this.lowFps);
+            }
+        });
+        idleTimer.setRepeats(false);
 
         gcodeModel = new GcodeModel(Localization.getString("platform.visualizer.renderable.gcode-model"), backend);
         sizeDisplay = new SizeDisplay(Localization.getString("platform.visualizer.renderable.gcode-model-size"));
@@ -106,6 +119,12 @@ public class RendererInputHandler implements
     }
 
     private void setFPS(int fps) {
+        // Restarting the animator takes time, which a key that is held down would do over and over
+        if (fps == currentFps) {
+            return;
+        }
+        currentFps = fps;
+
         if (animator instanceof FPSAnimator fpsAnimator) {
             fpsAnimator.stop();
             fpsAnimator.setFPS(fps);
@@ -206,6 +225,8 @@ public class RendererInputHandler implements
      */
     @Override
     public void mouseWheelMoved(MouseWheelEvent e) {
+        setFPS(highFps);
+        idleTimer.restart();
         gcodeRenderer.zoom(e.getWheelRotation());
     }
 
@@ -274,6 +295,7 @@ public class RendererInputHandler implements
      */
     @Override
     public void mousePressed(MouseEvent e) {
+        interacting = true;
         setFPS(highFps);
         // Zoom
         if (e.getButton() == MouseEvent.BUTTON1 && e.isMetaDown()) {
@@ -285,6 +307,7 @@ public class RendererInputHandler implements
 
     @Override
     public void mouseReleased(MouseEvent e) {
+        interacting = false;
         setFPS(lowFps);
 
         // Finish selecting.
@@ -320,6 +343,7 @@ public class RendererInputHandler implements
      */
     @Override
     public void keyPressed(KeyEvent ke) {
+        interacting = true;
         setFPS(highFps);
 
         int DELTA_SIZE = 1;
@@ -361,6 +385,7 @@ public class RendererInputHandler implements
      */
     @Override
     public void keyReleased(KeyEvent ke) {
+        interacting = false;
         setFPS(lowFps);
     }
 

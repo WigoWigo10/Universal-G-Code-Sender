@@ -43,6 +43,17 @@ import java.util.logging.Logger;
 import java.util.prefs.Preferences;
 
 public class VisualizationPanel extends JPanel {
+    /**
+     * Frames per second while nothing is being changed with the mouse or the keyboard. It is low to leave the
+     * processor for streaming the program.
+     */
+    private static final int IDLE_FPS = 4;
+
+    /**
+     * Frames per second while the view is being rotated, panned or zoomed
+     */
+    private static final int INTERACTION_FPS = 60;
+
     private static final Logger LOGGER = Logger.getLogger(VisualizationPanel.class.getName());
     private final transient BackendAPI backend;
 
@@ -99,7 +110,7 @@ public class VisualizationPanel extends JPanel {
         }
 
         FPSAnimator animator = new FPSAnimator(p, 15);
-        this.rih = new RendererInputHandler(renderer, animator, backend, 4, 15);
+        this.rih = new RendererInputHandler(renderer, animator, backend, IDLE_FPS, INTERACTION_FPS);
 
         Preferences pref = NbPreferences.forModule(VisualizerOptionsPanel.class);
         pref.addPreferenceChangeListener(this.rih);

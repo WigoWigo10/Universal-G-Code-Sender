@@ -62,6 +62,7 @@ import java.util.logging.Logger;
 public class GcodeModel extends Renderable implements UGSEventListener {
     public static final double ARC_TOLERANCE = 0.01;
     private static final Logger logger = Logger.getLogger(GcodeModel.class.getName());
+    private static final float LINE_WIDTH = 1.5f;
     private final GcodeLineColorizer colorizer = new GcodeLineColorizer();
     private final BackendAPI backend;
     private boolean colorArrayDirty;
@@ -173,7 +174,7 @@ public class GcodeModel extends Renderable implements UGSEventListener {
                 this.updateGLGeometryArray();
                 this.vertexArrayDirty = false;
             }
-            gl.glLineWidth(1.0f);
+            gl.glLineWidth(LINE_WIDTH);
             gl.glVertexPointer(3, GL.GL_FLOAT, 0, lineVertexBuffer);
             gl.glColorPointer(4, GL.GL_UNSIGNED_BYTE, 0, lineColorBuffer);
             gl.glDrawArrays(GL.GL_LINES, 0, numberOfVertices);
@@ -182,8 +183,8 @@ public class GcodeModel extends Renderable implements UGSEventListener {
         }
         // Traditional OpenGL
         else {
+            gl.glLineWidth(LINE_WIDTH);
             gl.glBegin(GL_LINES);
-            gl.glLineWidth(1.0f);
 
             int verts = 0;
             int colors = 0;
