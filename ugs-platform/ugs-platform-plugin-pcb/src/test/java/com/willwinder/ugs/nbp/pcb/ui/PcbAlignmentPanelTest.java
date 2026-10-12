@@ -36,13 +36,17 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import javax.swing.JTable;
+import javax.swing.JTextField;
 import javax.swing.SwingUtilities;
+import java.awt.event.KeyEvent;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.Executor;
 
 /**
  * Tests the alignment window without the platform around it: the panel is used as the operator
@@ -73,6 +77,9 @@ public class PcbAlignmentPanelTest {
     private final List<String> errors = new ArrayList<>();
     private final List<String> confirmations = new ArrayList<>();
     private boolean confirm = true;
+    private Runnable whenConfirming = () -> {
+    };
+    private Executor backgroundExecutor = Runnable::run;
 
     private interface UserInterfaceAction {
         void run() throws Exception;
@@ -117,8 +124,9 @@ public class PcbAlignmentPanelTest {
     private PcbAlignmentPanel createPanel(GUIBackend panelBackend, Optional<PcbAlignmentService> panelService) throws Exception {
         PcbAlignmentPanel[] result = new PcbAlignmentPanel[1];
         onUserInterface(() -> {
-            result[0] = new PcbAlignmentPanel(panelBackend, () -> panelService, Runnable::run, message -> {
+            result[0] = new PcbAlignmentPanel(panelBackend, new AlignmentModel(), () -> panelService, backgroundExecutor, message -> {
                 confirmations.add(message);
+                whenConfirming.run();
                 return confirm;
             }, errors::add);
             panelBackend.addUGSEventListener(result[0]);
@@ -252,6 +260,51 @@ public class PcbAlignmentPanelTest {
         assertEquals(Status.INVALID_COORDINATES, status());
         assertEquals(AlignmentTableModel.INVALID, panel.getTable().getValueAt(0, AlignmentTableModel.COLUMN_MEASURED_Y));
         assertFalse(panel.isApplyEnabled());
+    }
+
+    @Test
+    public void typingInACellShouldReplaceTheCoordinateInsteadOfAddingToIt() throws Exception {
+        enterValidAlignment();
+
+        onUserInterface(() -> {
+            JTable table = panel.getTable();
+            table.editCellAt(1, AlignmentTableModel.COLUMN_MEASURED_X, new KeyEvent(table, KeyEvent.KEY_PRESSED, 0, 0, KeyEvent.VK_7, '7'));
+            JTextField editor = (JTextField) table.getEditorComponent();
+            assertEquals("", editor.getText());
+            editor.setText("36.5");
+            table.getCellEditor().stopCellEditing();
+        });
+
+        assertEquals(36.5, panel.getModel().getPoints().get(1).measuredX(), 0);
+    }
+
+    @Test
+    public void editingACellInAnotherWayShouldStartWithTheCoordinate() throws Exception {
+        enterValidAlignment();
+
+        onUserInterface(() -> {
+            JTable table = panel.getTable();
+            table.editCellAt(1, AlignmentTableModel.COLUMN_MEASURED_X, null);
+            assertEquals("35", ((JTextField) table.getEditorComponent()).getText());
+            table.getCellEditor().cancelCellEditing();
+        });
+
+        assertEquals(35, panel.getModel().getPoints().get(1).measuredX(), 0);
+    }
+
+    @Test
+    public void criteriaShouldStillBeThereWhenTheWindowIsOpenedAgain() throws Exception {
+        AlignmentModel model = new AlignmentModel();
+        PcbAlignmentPanel[] window = new PcbAlignmentPanel[1];
+        onUserInterface(() -> {
+            window[0] = new PcbAlignmentPanel(backend, model, () -> Optional.of(service), Runnable::run, message -> confirm, errors::add);
+            window[0].setCriteriaText("0.02", "0.1", "25");
+            window[0].dispose();
+            window[0] = new PcbAlignmentPanel(backend, model, () -> Optional.of(service), Runnable::run, message -> confirm, errors::add);
+            window[0].updateCriteria();
+        });
+
+        assertEquals(new AlignmentModel.Criteria(0.02, 0.001, 25), model.getCriteria());
     }
 
     // Capturing positions from the machine
@@ -659,6 +712,227 @@ public class PcbAlignmentPanelTest {
         waitForUserInterface();
 
         assertTrue(errors.toString(), errors.isEmpty());
+    }
+
+    // Things that happen while something is being done in the background
+
+    /**
+     * Makes the panel do what it does in the background later, when the returned tasks are run
+     */
+    private List<Runnable> deferBackgroundTasks() throws Exception {
+        List<Runnable> tasks = new ArrayList<>();
+        backgroundExecutor = tasks::add;
+        panel = createPanel(backend, Optional.of(service));
+        tasks.clear();
+        return tasks;
+    }
+
+    @Test
+    public void descriptionOfEarlierProgramShouldNotReplaceThatOfTheLoadedProgram() throws Exception {
+        List<Runnable> tasks = deferBackgroundTasks();
+        File other = new File(folder.getRoot(), "other.nc");
+        Files.write(other.toPath(), PROGRAM, StandardCharsets.UTF_8);
+
+        // The program is described twice, and the description of the first one is ready last
+        onUserInterface(() -> panel.refreshProgram());
+        backend.setGcodeFile(other);
+        waitForUserInterface();
+        Runnable describeEarlier = tasks.get(0);
+        Runnable describeLoaded = tasks.get(tasks.size() - 1);
+        onUserInterface(describeLoaded::run);
+        onUserInterface(describeEarlier::run);
+
+        assertEquals("other.nc (original program)", panel.getProgramText());
+    }
+
+    @Test
+    public void previewOfEarlierProgramShouldNotBeShownForTheLoadedProgram() throws Exception {
+        List<Runnable> tasks = deferBackgroundTasks();
+        File other = new File(folder.getRoot(), "other.nc");
+        Files.write(other.toPath(), PROGRAM, StandardCharsets.UTF_8);
+
+        onUserInterface(() -> panel.loadPreview());
+        Runnable loadPreview = tasks.get(tasks.size() - 1);
+        backend.setGcodeFile(other);
+        waitForUserInterface();
+        onUserInterface(loadPreview::run);
+
+        assertEquals(0, panel.getPreviewPathSize());
+        assertTrue(errors.toString(), errors.isEmpty());
+    }
+
+    @Test
+    public void previewShouldShowTheProgramThatIsLoaded() throws Exception {
+        onUserInterface(() -> panel.loadPreview());
+        waitForUserInterface();
+
+        assertTrue(panel.getPreviewPathSize() > 3);
+    }
+
+    @Test
+    public void alignmentShouldNotBeAppliedWhenAnotherProgramIsLoadedWhileItIsBeingConfirmed() throws Exception {
+        File other = new File(folder.getRoot(), "other.nc");
+        Files.write(other.toPath(), PROGRAM, StandardCharsets.UTF_8);
+        enterValidAlignment();
+        whenConfirming = () -> {
+            try {
+                backend.setGcodeFile(other);
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        };
+
+        onUserInterface(() -> panel.applyAlignment());
+        waitForUserInterface();
+
+        assertEquals(List.of(PcbAlignmentService.ERROR_PLAN_OUTDATED), errors);
+        assertTrue(confirmations.get(0), confirmations.get(0).contains("Original program: " + source.getAbsolutePath()));
+        assertEquals(other, backend.getGcodeFile());
+        assertFalse(alignedFile.exists());
+        assertFalse(new File(folder.getRoot(), "other_aligned.nc").exists());
+        assertEquals("other.nc (original program)", panel.getProgramText());
+    }
+
+    @Test
+    public void alignmentShouldNotBeAppliedWhenTheOriginalIsChangedWhileItIsBeingConfirmed() throws Exception {
+        enterValidAlignment();
+        whenConfirming = () -> {
+            try {
+                Files.write(source.toPath(), List.of("G21 G90", "G0 X1 Y1"), StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        };
+
+        onUserInterface(() -> panel.applyAlignment());
+        waitForUserInterface();
+
+        assertEquals(1, errors.size());
+        assertTrue(errors.get(0), errors.get(0).startsWith(com.willwinder.ugs.nbp.pcb.gcode.AlignedGcodeExporter.ERROR_SOURCE_CHANGED));
+        assertFalse(alignedFile.exists());
+        assertEquals(source, backend.getGcodeFile());
+    }
+
+    @Test
+    public void whatIsAppliedShouldBeWhatWasConfirmedEvenIfThePointsAreEditedMeanwhile() throws Exception {
+        enterValidAlignment();
+        whenConfirming = () -> panel.getModel().setMeasured(1, 37.0, 26.0);
+
+        onUserInterface(() -> panel.applyAlignment());
+        waitForUserInterface();
+
+        assertTrue(confirmations.get(0), confirmations.get(0).contains("Translation: X10 Y5 mm"));
+        AlignmentMetadata metadata = AlignmentMetadata.read(alignedFile).orElseThrow();
+        assertEquals(10, metadata.transform().translationX(), 1e-9);
+        assertEquals(5, metadata.transform().translationY(), 1e-9);
+        assertEquals(0, metadata.transform().rotation(), 1e-9);
+    }
+
+    // Closing and opening the window again
+
+    @Test
+    public void pointsShouldStillBeThereWhenTheWindowIsOpenedAgain() throws Exception {
+        AlignmentModel model = new AlignmentModel();
+        PcbAlignmentPanel[] window = new PcbAlignmentPanel[1];
+        onUserInterface(() -> {
+            window[0] = new PcbAlignmentPanel(backend, model, () -> Optional.of(service), Runnable::run, message -> confirm, errors::add);
+            window[0].getTable().setValueAt("5", 0, AlignmentTableModel.COLUMN_NOMINAL_X);
+            window[0].getTable().setValueAt("12.5", 0, AlignmentTableModel.COLUMN_MEASURED_Y);
+            window[0].capturePoint(1);
+            window[0].dispose();
+        });
+
+        onUserInterface(() -> window[0] = new PcbAlignmentPanel(backend, model, () -> Optional.of(service), Runnable::run, message -> confirm, errors::add));
+
+        assertEquals("5", window[0].getTable().getValueAt(0, AlignmentTableModel.COLUMN_NOMINAL_X));
+        assertEquals("12.5", window[0].getTable().getValueAt(0, AlignmentTableModel.COLUMN_MEASURED_Y));
+        assertTrue(model.getPoints().get(1).measuredOnMachine());
+        assertEquals("board.nc (original program)", window[0].getProgramText());
+    }
+
+    @Test
+    public void closedWindowShouldNoLongerListenToThePoints() throws Exception {
+        AlignmentModel model = new AlignmentModel();
+        PcbAlignmentPanel[] window = new PcbAlignmentPanel[1];
+        onUserInterface(() -> window[0] = new PcbAlignmentPanel(backend, model, () -> Optional.of(service), Runnable::run, message -> confirm, errors::add));
+        assertEquals(2, model.getListenerCount());
+
+        onUserInterface(() -> window[0].dispose());
+
+        assertEquals(0, model.getListenerCount());
+    }
+
+    @Test
+    public void windowOpenedAgainShouldShowTheStateOfTheLoadedProgram() throws Exception {
+        enterValidAlignment();
+        onUserInterface(() -> panel.applyAlignment());
+        waitForUserInterface();
+        onUserInterface(() -> {
+            backend.removeUGSEventListener(panel);
+            panel.dispose();
+        });
+
+        PcbAlignmentPanel reopened = createPanel(backend, Optional.of(service));
+
+        assertTrue(reopened.getProgramText(), reopened.getProgramText().startsWith("board_aligned.nc (aligned from board.nc in G54"));
+        assertTrue(reopened.getValidationText(), reopened.getValidationText().startsWith("VALIDATED"));
+    }
+
+    // The loader of the platform, which opens the program later
+
+    @Test
+    public void programShouldOnlyBeShownAsValidatedWhenItHasBeenLoadedAndValidated() throws Exception {
+        List<File> filesToOpen = new ArrayList<>();
+        service = new PcbAlignmentService(backend, filesToOpen::add, e -> errors.add(e.getMessage()));
+        panel = createPanel(backend, Optional.of(service));
+        enterValidAlignment();
+
+        onUserInterface(() -> panel.applyAlignment());
+        waitForUserInterface();
+
+        // The aligned program is written, but the editor has not opened it yet
+        assertEquals(source, backend.getGcodeFile());
+        assertEquals(ValidationState.PENDING, service.getValidationState());
+        assertFalse(panel.getValidationText(), panel.getValidationText().startsWith("VALIDATED"));
+
+        backend.unsetGcodeFile();
+        backend.setGcodeFile(filesToOpen.get(0));
+        waitForUserInterface();
+
+        assertEquals(ValidationState.VALID, service.getValidationState());
+        assertTrue(panel.getValidationText(), panel.getValidationText().startsWith("VALIDATED"));
+        assertTrue(panel.getProgramText(), panel.getProgramText().startsWith("board_aligned.nc (aligned from board.nc"));
+    }
+
+    @Test
+    public void programAlignedAgainShouldNotBeShownAsValidatedUntilTheNewOneIsLoaded() throws Exception {
+        List<File> filesToOpen = new ArrayList<>();
+        service = new PcbAlignmentService(backend, filesToOpen::add, e -> errors.add(e.getMessage()));
+        panel = createPanel(backend, Optional.of(service));
+        enterValidAlignment();
+        onUserInterface(() -> panel.applyAlignment());
+        backend.unsetGcodeFile();
+        backend.setGcodeFile(filesToOpen.remove(0));
+        waitForUserInterface();
+        assertTrue(panel.getValidationText(), panel.getValidationText().startsWith("VALIDATED"));
+
+        enter(0, "5", "5", "17", "11");
+        enter(1, "25", "20", "37", "26");
+        onUserInterface(() -> panel.applyAlignment());
+        waitForUserInterface();
+
+        // The earlier aligned program is still the one in the backend
+        assertTrue(errors.toString(), errors.isEmpty());
+        assertEquals(ValidationState.PENDING, service.getValidationState());
+        assertTrue(panel.getValidationText(), panel.getValidationText().startsWith("The aligned program is being loaded"));
+
+        backend.unsetGcodeFile();
+        backend.setGcodeFile(filesToOpen.remove(0));
+        waitForUserInterface();
+
+        assertEquals(ValidationState.VALID, service.getValidationState());
+        assertTrue(panel.getValidationText(), panel.getValidationText().startsWith("VALIDATED"));
+        assertEquals(12, service.getApproval().orElseThrow().metadata().transform().translationX(), 1e-9);
     }
 
     /**

@@ -112,8 +112,16 @@ public class AlignmentModel {
         listeners.add(listener);
     }
 
+    public void removeListener(Runnable listener) {
+        listeners.remove(listener);
+    }
+
+    int getListenerCount() {
+        return listeners.size();
+    }
+
     private void changed() {
-        listeners.forEach(Runnable::run);
+        List.copyOf(listeners).forEach(Runnable::run);
     }
 
     public List<ReferencePoint> getPoints() {

@@ -25,6 +25,7 @@ import com.willwinder.ugs.nbp.pcb.geometry.AlignmentResult;
 import com.willwinder.ugs.nbp.pcb.geometry.Point2D;
 import com.willwinder.ugs.nbp.pcb.geometry.RigidTransform2D;
 import com.willwinder.ugs.nbp.pcb.service.PcbAlignmentService;
+import com.willwinder.ugs.nbp.pcb.service.PcbAlignmentService.AlignmentPlan;
 import com.willwinder.ugs.nbp.pcb.service.PcbAlignmentService.ValidationState;
 import com.willwinder.ugs.nbp.pcb.ui.AlignmentModel.Criteria;
 import com.willwinder.ugs.nbp.pcb.ui.AlignmentModel.Evaluation;
@@ -42,6 +43,7 @@ import com.willwinder.universalgcodesender.model.events.FileStateEvent;
 import net.miginfocom.swing.MigLayout;
 
 import javax.swing.AbstractCellEditor;
+import javax.swing.DefaultCellEditor;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JLabel;
@@ -55,11 +57,13 @@ import javax.swing.table.TableCellRenderer;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.EventQueue;
+import java.awt.event.KeyEvent;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.EventObject;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -97,10 +101,10 @@ public class PcbAlignmentPanel extends JPanel implements UGSEventListener {
     private final transient Predicate<String> confirmation;
     private final transient Consumer<String> errorReporter;
     private final transient PositionCapture positionCapture;
-    private final transient AlignmentModel model = new AlignmentModel();
+    private final transient AlignmentModel model;
 
-    private final AlignmentTableModel tableModel = new AlignmentTableModel(model);
-    private final JTable table = new JTable(tableModel);
+    private final AlignmentTableModel tableModel;
+    private final JTable table;
     private final AlignmentPreviewPanel preview = new AlignmentPreviewPanel();
     private final JLabel programLabel = new JLabel(NO_PROGRAM);
     private final JLabel validationLabel = new JLabel(" ");
@@ -112,9 +116,9 @@ public class PcbAlignmentPanel extends JPanel implements UGSEventListener {
     private final JLabel scaleErrorLabel = new JLabel("-");
     private final JLabel statusLabel = new JLabel(" ");
     private final JComboBox<Code> workCoordinateSystem = new JComboBox<>(WORK_COORDINATE_SYSTEMS);
-    private final JTextField maxResidualField = new JTextField(format(Criteria.DEFAULT.maxResidualMM()), 6);
-    private final JTextField maxScaleErrorField = new JTextField(format(Criteria.DEFAULT.maxScaleError() * 100), 6);
-    private final JTextField minPointDistanceField = new JTextField(format(Criteria.DEFAULT.minPointDistanceMM()), 6);
+    private final JTextField maxResidualField = new JTextField(6);
+    private final JTextField maxScaleErrorField = new JTextField(6);
+    private final JTextField minPointDistanceField = new JTextField(6);
     private final JTextField maxZChangeField = new JTextField("0", 6);
     private final JButton addPointButton = new JButton("Add point");
     private final JButton removePointButton = new JButton("Remove point");
@@ -123,18 +127,31 @@ public class PcbAlignmentPanel extends JPanel implements UGSEventListener {
     private final JButton applyButton = new JButton("Apply alignment");
     private final JButton validateButton = new JButton("Validate program");
 
+    private final transient Runnable modelListener = this::refreshAlignment;
     private boolean isBusy;
     private boolean isUpdatingControls;
 
     /**
+     * Counts the times that the loaded program has been described. What is found out about the program
+     * in the background is only shown if the program has not been described again meanwhile, so that
+     * something about a program that is no longer loaded never replaces what is shown about the new one.
+     */
+    private int programGeneration;
+    private int previewGeneration;
+
+    /**
+     * @param model              the reference points, which are kept by the window while it is closed
      * @param alignmentService   gives the alignment service that is registered when the application starts
      * @param backgroundExecutor runs what takes time, so that the user interface is not blocked
      * @param confirmation       asks the operator to confirm applying the alignment that is described
      * @param errorReporter      shows a message about something that could not be done
      */
-    public PcbAlignmentPanel(BackendAPI backend, Supplier<Optional<PcbAlignmentService>> alignmentService,
+    public PcbAlignmentPanel(BackendAPI backend, AlignmentModel model, Supplier<Optional<PcbAlignmentService>> alignmentService,
                              Executor backgroundExecutor, Predicate<String> confirmation, Consumer<String> errorReporter) {
         this.backend = backend;
+        this.model = model;
+        this.tableModel = new AlignmentTableModel(model);
+        this.table = new JTable(tableModel);
         this.alignmentService = alignmentService;
         this.backgroundExecutor = backgroundExecutor;
         this.confirmation = confirmation;
@@ -148,7 +165,15 @@ public class PcbAlignmentPanel extends JPanel implements UGSEventListener {
     }
 
     private void initComponents() {
+        // The criteria are kept with the reference points while the window is closed
+        maxResidualField.setText(format(model.getCriteria().maxResidualMM()));
+        maxScaleErrorField.setText(format(model.getCriteria().maxScaleError() * 100));
+        minPointDistanceField.setText(format(model.getCriteria().minPointDistanceMM()));
+
         table.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
+        for (int column = AlignmentTableModel.COLUMN_NOMINAL_X; column <= AlignmentTableModel.COLUMN_MEASURED_Y; column++) {
+            table.getColumnModel().getColumn(column).setCellEditor(new CoordinateEditor());
+        }
         table.setRowSelectionAllowed(true);
         table.getColumnModel().getColumn(AlignmentTableModel.COLUMN_NUMBER).setMaxWidth(30);
         table.getColumnModel().getColumn(AlignmentTableModel.COLUMN_CAPTURE).setCellRenderer(new CaptureButtonRenderer());
@@ -200,8 +225,16 @@ public class PcbAlignmentPanel extends JPanel implements UGSEventListener {
         add(validationLabel, "growx, gapleft 16");
     }
 
+    /**
+     * Stops showing the reference points, which are kept while the window is closed
+     */
+    public void dispose() {
+        model.removeListener(modelListener);
+        tableModel.dispose();
+    }
+
     private void initListeners() {
-        model.addListener(this::refreshAlignment);
+        model.addListener(modelListener);
         addPointButton.addActionListener(event -> model.addPoint());
         removePointButton.addActionListener(event -> removeSelectedPoint());
         clearMeasuredButton.addActionListener(event -> model.clearMeasured());
@@ -312,6 +345,7 @@ public class PcbAlignmentPanel extends JPanel implements UGSEventListener {
     public void UGSEvent(UGSEvent event) {
         if (event instanceof FileStateEvent) {
             runOnUserInterface(() -> {
+                previewGeneration++;
                 preview.setProgramPath(List.of());
                 refreshProgram();
             });
@@ -328,13 +362,19 @@ public class PcbAlignmentPanel extends JPanel implements UGSEventListener {
      */
     void refreshProgram() {
         refreshMachine();
+        int generation = ++programGeneration;
         File file = backend.getGcodeFile();
         Optional<PcbAlignmentService> service = alignmentService.get();
         backgroundExecutor.execute(() -> {
             String description = describeProgram(file);
-            ValidationState state = service.map(PcbAlignmentService::getValidationState).orElse(ValidationState.NOT_VALIDATED);
             boolean isAligned = isAligned(file);
             runOnUserInterface(() -> {
+                if (generation != programGeneration) {
+                    return;
+                }
+
+                // The state is read last, so that it is the state of the program as it is now
+                ValidationState state = service.map(PcbAlignmentService::getValidationState).orElse(ValidationState.NOT_VALIDATED);
                 programLabel.setText(description);
                 showValidation(file, isAligned, state);
                 refreshActions();
@@ -437,6 +477,7 @@ public class PcbAlignmentPanel extends JPanel implements UGSEventListener {
         }
 
         Optional<PcbAlignmentService> service = alignmentService.get();
+        int generation = ++previewGeneration;
         setBusy(true);
         backgroundExecutor.execute(() -> {
             try {
@@ -447,9 +488,18 @@ public class PcbAlignmentPanel extends JPanel implements UGSEventListener {
                 for (int i = 0; i < positions.size(); i += step) {
                     path.add(new Point2D(positions.get(i).getX(), positions.get(i).getY()));
                 }
-                runOnUserInterface(() -> preview.setProgramPath(path));
+                runOnUserInterface(() -> {
+                    // Another program may have been loaded while this one was read
+                    if (generation == previewGeneration) {
+                        preview.setProgramPath(path);
+                    }
+                });
             } catch (IOException | GcodeParserException | AlignmentException | RuntimeException e) {
-                runOnUserInterface(() -> errorReporter.accept("The program could not be previewed: " + e.getMessage()));
+                runOnUserInterface(() -> {
+                    if (generation == previewGeneration) {
+                        errorReporter.accept("The program could not be previewed: " + e.getMessage());
+                    }
+                });
             } finally {
                 runOnUserInterface(() -> setBusy(false));
             }
@@ -481,12 +531,13 @@ public class PcbAlignmentPanel extends JPanel implements UGSEventListener {
         setBusy(true);
         backgroundExecutor.execute(() -> {
             try {
-                File original = service.get().findOriginalFile(file);
-                String summary = describeAlignment(original, service.get().getAlignedFile(original), measuredIn, result);
-                if (!confirm(summary)) {
+                // What is confirmed is a plan, and applying the plan fails if another program has been
+                // loaded or the original has been changed while the confirmation was open
+                AlignmentPlan plan = service.get().plan(result.transform(), measuredIn);
+                if (!confirm(describeAlignment(plan.source(), plan.target(), plan.workCoordinateSystem(), result))) {
                     return;
                 }
-                service.get().alignLoadedFile(result.transform(), measuredIn);
+                service.get().apply(plan);
             } catch (AlignmentException | RuntimeException e) {
                 runOnUserInterface(() -> errorReporter.accept(e.getMessage()));
             } finally {
@@ -597,6 +648,10 @@ public class PcbAlignmentPanel extends JPanel implements UGSEventListener {
         return translationLabel.getText();
     }
 
+    int getPreviewPathSize() {
+        return preview.getProgramPath().size();
+    }
+
     boolean isApplyEnabled() {
         return applyButton.isEnabled();
     }
@@ -614,6 +669,35 @@ public class PcbAlignmentPanel extends JPanel implements UGSEventListener {
 
     void setMaxZChangeText(String maxZChange) {
         maxZChangeField.setText(maxZChange);
+    }
+
+    /**
+     * Edits a coordinate. Typing in a cell replaces what is in it, instead of adding to it as a table does
+     * by default: a digit added to a coordinate by mistake would still be a coordinate.
+     */
+    static class CoordinateEditor extends DefaultCellEditor {
+        private boolean isStartedByTyping;
+
+        CoordinateEditor() {
+            super(new JTextField());
+        }
+
+        @Override
+        public boolean isCellEditable(EventObject event) {
+            isStartedByTyping = event instanceof KeyEvent;
+            return super.isCellEditable(event);
+        }
+
+        @Override
+        public Component getTableCellEditorComponent(JTable table, Object value, boolean isSelected, int row, int column) {
+            JTextField field = (JTextField) super.getTableCellEditorComponent(table, value, isSelected, row, column);
+            if (isStartedByTyping) {
+                field.setText("");
+            } else {
+                SwingUtilities.invokeLater(field::selectAll);
+            }
+            return field;
+        }
     }
 
     /**

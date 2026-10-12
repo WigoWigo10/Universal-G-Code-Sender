@@ -53,6 +53,10 @@ public final class PcbAlignmentTopComponent extends TopComponent {
     public static final String ACTION_ID = "com.willwinder.ugs.nbp.pcb.ui.PcbAlignmentTopComponent";
     public static final String CATEGORY = LocalizingService.CATEGORY_WINDOW;
 
+    /**
+     * The reference points are kept here, so that they are still there when the window is opened again
+     */
+    private final transient AlignmentModel model = new AlignmentModel();
     private transient BackendAPI backend;
     private transient PcbAlignmentPanel panel;
 
@@ -67,6 +71,7 @@ public final class PcbAlignmentTopComponent extends TopComponent {
         backend = LookupService.lookup(BackendAPI.class);
         panel = new PcbAlignmentPanel(
                 backend,
+                model,
                 () -> LookupService.lookupOptional(PcbAlignmentService.class),
                 command -> new Thread(command, "PCB alignment").start(),
                 message -> JOptionPane.showConfirmDialog(this, message, TITLE, JOptionPane.OK_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE) == JOptionPane.OK_OPTION,
@@ -78,6 +83,7 @@ public final class PcbAlignmentTopComponent extends TopComponent {
     @Override
     public void componentClosed() {
         backend.removeUGSEventListener(panel);
+        panel.dispose();
         removeAll();
         panel = null;
     }

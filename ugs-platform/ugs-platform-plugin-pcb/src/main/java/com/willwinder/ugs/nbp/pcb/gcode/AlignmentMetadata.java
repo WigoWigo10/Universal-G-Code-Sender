@@ -170,7 +170,7 @@ public record AlignmentMetadata(String sourceName, String sourceSha256, RigidTra
         return sha256((String.join("\n", lines) + "\n").getBytes(StandardCharsets.UTF_8));
     }
 
-    static String sha256(byte[] bytes) {
+    public static String sha256(byte[] bytes) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
         } catch (NoSuchAlgorithmException e) {

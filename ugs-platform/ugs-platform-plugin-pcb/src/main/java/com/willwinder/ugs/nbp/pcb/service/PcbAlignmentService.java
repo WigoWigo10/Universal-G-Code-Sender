@@ -38,6 +38,7 @@ import com.willwinder.universalgcodesender.services.FileLoader;
 import com.willwinder.universalgcodesender.services.LookupService;
 import com.willwinder.universalgcodesender.services.jobvalidation.JobRequest;
 import com.willwinder.universalgcodesender.services.jobvalidation.JobValidationException;
+import com.willwinder.universalgcodesender.types.GcodeCommand;
 import com.willwinder.universalgcodesender.utils.GUIHelpers;
 import com.willwinder.universalgcodesender.utils.GcodeStreamReader;
 import com.willwinder.universalgcodesender.utils.IGcodeStreamReader;
@@ -82,6 +83,22 @@ public class PcbAlignmentService implements UGSEventListener {
     public record Approval(File alignedFile, AlignmentMetadata metadata, String processedSha256, double maxZChangeMM) {
     }
 
+    /**
+     * What applying an alignment will do, decided before the operator is asked to confirm it. Applying
+     * the plan does exactly this or nothing: it fails if another program has been loaded or if the
+     * original program has been changed since the plan was made.
+     *
+     * @param loadedFile           the program that was loaded when the plan was made
+     * @param source               the original program that will be aligned
+     * @param sourceSha256         the hash of the original program
+     * @param target               the file that the aligned program will be written to
+     * @param transform            the alignment with the translation in millimeters
+     * @param workCoordinateSystem the work coordinate system that the alignment was measured in
+     */
+    public record AlignmentPlan(File loadedFile, File source, String sourceSha256, File target,
+                                RigidTransform2D transform, Code workCoordinateSystem) {
+    }
+
     public static final String ALIGNED_FILE_SUFFIX = "_aligned";
 
     public static final String ERROR_NO_FILE = "There is no program loaded to align.";
@@ -91,6 +108,8 @@ public class PcbAlignmentService implements UGSEventListener {
     public static final String ERROR_NOT_ALIGNED = "The loaded program is not an aligned program, or it has been changed since it was aligned: ";
     public static final String ERROR_NOT_PROCESSED = "The aligned program has not been processed for sending.";
     public static final String ERROR_LOAD = "The aligned program could not be loaded: ";
+    public static final String ERROR_PLAN_OUTDATED = "Another program was loaded after the alignment was confirmed, so it was not applied.";
+    public static final String ERROR_PROCESSED_FROM_OTHER_PROGRAM = "The program that would be sent was not made from the loaded aligned program. Load the aligned program again.";
     public static final String ERROR_CHANGED_DURING_VALIDATION = "The program was processed again while it was being validated, validate it again.";
     public static final String ERROR_NOT_APPROVED = "The aligned program has not been validated. Validate it with the PCB tools before it is started.";
     public static final String ERROR_PROCESSED_CHANGED = "The aligned program has been processed again since it was validated, for instance by the auto leveler. Validate it again with the PCB tools before it is started.";
@@ -110,7 +129,9 @@ public class PcbAlignmentService implements UGSEventListener {
     private ValidationState validationState = ValidationState.NOT_VALIDATED;
     private Approval approval;
     private File pendingFile;
+    private File alignedFile;
     private boolean isLoading;
+    private boolean loadedWhileOpening;
 
     /**
      * Creates a service that opens the aligned program in the same way as the application opens files,
@@ -188,6 +209,17 @@ public class PcbAlignmentService implements UGSEventListener {
      * @throws AlignmentException if the program could not be aligned, in which case the loaded program is not changed
      */
     public synchronized AlignedGcodeFile alignLoadedFile(RigidTransform2D transform, Code workCoordinateSystem) throws AlignmentException {
+        return apply(plan(transform, workCoordinateSystem));
+    }
+
+    /**
+     * Decides what applying an alignment to the loaded program will do, without doing anything yet
+     *
+     * @param transform            the alignment with the translation in millimeters
+     * @param workCoordinateSystem the work coordinate system that the alignment was measured in
+     * @throws AlignmentException if the loaded program can not be aligned
+     */
+    public synchronized AlignmentPlan plan(RigidTransform2D transform, Code workCoordinateSystem) throws AlignmentException {
         File loadedFile = backend.getGcodeFile();
         if (loadedFile == null) {
             throw new AlignmentException(ERROR_NO_FILE);
@@ -198,9 +230,31 @@ public class PcbAlignmentService implements UGSEventListener {
         verifyWorkCoordinateSystem(workCoordinateSystem);
 
         File source = findOriginalFile(loadedFile);
-        AlignedGcodeFile alignedFile = exporter.export(source, transform, workCoordinateSystem, getAlignedFile(source));
-        load(alignedFile);
-        return alignedFile;
+        try {
+            String sourceSha256 = AlignmentMetadata.sha256(Files.readAllBytes(source.toPath()));
+            return new AlignmentPlan(loadedFile.getAbsoluteFile(), source, sourceSha256, getAlignedFile(source), transform, workCoordinateSystem);
+        } catch (IOException e) {
+            throw new AlignmentException(ERROR_SOURCE_MISSING + loadedFile, e);
+        }
+    }
+
+    /**
+     * Applies a plan: aligns the original program and loads the result
+     *
+     * @throws AlignmentException if the plan could not be applied as it was made, in which case the loaded program is not changed
+     */
+    public synchronized AlignedGcodeFile apply(AlignmentPlan plan) throws AlignmentException {
+        if (!isSameFile(plan.loadedFile(), backend.getGcodeFile())) {
+            throw new AlignmentException(ERROR_PLAN_OUTDATED);
+        }
+        if (backend.isSendingFile()) {
+            throw new AlignmentException(ERROR_SENDING);
+        }
+        verifyWorkCoordinateSystem(plan.workCoordinateSystem());
+
+        AlignedGcodeFile result = exporter.export(plan.source(), plan.transform(), plan.workCoordinateSystem(), plan.target(), plan.sourceSha256());
+        load(result);
+        return result;
     }
 
     /**
@@ -242,8 +296,11 @@ public class PcbAlignmentService implements UGSEventListener {
         readVerifiedMetadata(alignedFile.file());
 
         backend.getSettings().getAutoLevelSettings().setApplyToGcode(false);
+        approval = null;
         pendingFile = alignedFile.file();
+        this.alignedFile = alignedFile.file();
         validationState = ValidationState.PENDING;
+        loadedWhileOpening = false;
         isLoading = true;
         try {
             fileLoader.openFile(alignedFile.file());
@@ -254,37 +311,56 @@ public class PcbAlignmentService implements UGSEventListener {
             isLoading = false;
         }
 
-        // Some loaders open the file later, it is then validated when the backend has loaded it
-        if (isSameFile(pendingFile, backend.getGcodeFile())) {
+        // The program is only validated when the backend has loaded it after this was called. That the
+        // backend has a program with the same path says nothing: when an aligned program is aligned again
+        // it is the earlier one, until the new one has been loaded. Some loaders open the file later, the
+        // program is then validated when the backend tells that it has been loaded.
+        if (loadedWhileOpening) {
             validatePendingFile();
         }
     }
 
     @Override
     public synchronized void UGSEvent(UGSEvent event) {
-        if (!(event instanceof FileStateEvent fileStateEvent) || isLoading) {
+        if (!(event instanceof FileStateEvent fileStateEvent)) {
             return;
         }
 
-        // The program was unloaded or could not be processed, so there is nothing left that is validated
+        boolean isLoaded = fileStateEvent.getFileState() == FileState.FILE_LOADED;
+        if (isLoading) {
+            loadedWhileOpening |= isLoaded && isSameFile(pendingFile, backend.getGcodeFile());
+            return;
+        }
+
+        // The program was unloaded or could not be processed, so there is nothing left that is validated.
+        // A program that is being loaded stays pending, as loading it starts with unloading the earlier one.
         if (fileStateEvent.getFileState() == FileState.FILE_UNLOADED) {
-            validationState = ValidationState.NOT_VALIDATED;
+            validationState = pendingFile != null ? ValidationState.PENDING : ValidationState.NOT_VALIDATED;
             approval = null;
             return;
         }
-        if (fileStateEvent.getFileState() != FileState.FILE_LOADED) {
+        if (!isLoaded) {
             return;
         }
 
-        if (pendingFile != null && isSameFile(pendingFile, backend.getGcodeFile())) {
+        File loadedFile = backend.getGcodeFile();
+        if (pendingFile != null && isSameFile(pendingFile, loadedFile)) {
             try {
                 validatePendingFile();
             } catch (AlignmentException e) {
                 errorHandler.accept(e);
             }
+        } else if (pendingFile == null && isSameFile(alignedFile, loadedFile)) {
+            // The aligned program was loaded or processed again. It is validated as when it was first loaded,
+            // which only succeeds if nothing has changed it, and otherwise it has to be validated deliberately.
+            try {
+                validateProcessedFile(0);
+            } catch (AlignmentException e) {
+                validationState = ValidationState.NOT_VALIDATED;
+            }
         } else {
-            // The program has been replaced or processed again, such as when the auto leveler is applied
-            validationState = ValidationState.NOT_VALIDATED;
+            // Another program was loaded
+            validationState = pendingFile != null ? ValidationState.PENDING : ValidationState.NOT_VALIDATED;
             approval = null;
         }
     }
@@ -344,8 +420,12 @@ public class PcbAlignmentService implements UGSEventListener {
 
         try {
             String processedSha256 = JobRequest.sha256(processedFile);
-            List<Position> expected = ToolPathValidator.trace(Files.readAllLines(loadedFile.toPath(), StandardCharsets.UTF_8));
-            List<Position> processed = ToolPathValidator.trace(readProcessedCommands(processedFile));
+            List<String> loadedLines = Files.readAllLines(loadedFile.toPath(), StandardCharsets.UTF_8);
+            List<GcodeCommand> processedCommands = readProcessedCommands(processedFile);
+            verifyProcessedFromLoadedFile(loadedLines, processedCommands);
+
+            List<Position> expected = ToolPathValidator.trace(loadedLines);
+            List<Position> processed = ToolPathValidator.trace(processedCommands.stream().map(GcodeCommand::getCommandString).toList());
             ToolPathValidator.validate(expected, processed, VALIDATION_TOLERANCE_MM, maxZChangeMM);
 
             // What was validated must be what is approved
@@ -382,11 +462,27 @@ public class PcbAlignmentService implements UGSEventListener {
         }
     }
 
-    private List<String> readProcessedCommands(File processedFile) throws IOException, GcodeStreamReader.NotGcodeStreamFile {
-        List<String> result = new ArrayList<>();
+    /**
+     * Verifies that the processed program was made from the loaded program as it is now. The processed
+     * program records the line that every command comes from, which must be the same line of the loaded
+     * program. Comparing tool paths is not enough for this: an earlier alignment that only differs a
+     * little is within the tolerance of that comparison.
+     */
+    private void verifyProcessedFromLoadedFile(List<String> loadedLines, List<GcodeCommand> processedCommands) throws AlignmentException {
+        for (GcodeCommand command : processedCommands) {
+            int lineNumber = command.getCommandNumber();
+            String original = command.getOriginalCommandString() == null ? "" : command.getOriginalCommandString().trim();
+            if (lineNumber < 1 || lineNumber > loadedLines.size() || !loadedLines.get(lineNumber - 1).trim().equals(original)) {
+                throw new AlignmentException(ERROR_PROCESSED_FROM_OTHER_PROGRAM);
+            }
+        }
+    }
+
+    private List<GcodeCommand> readProcessedCommands(File processedFile) throws IOException, GcodeStreamReader.NotGcodeStreamFile {
+        List<GcodeCommand> result = new ArrayList<>();
         try (IGcodeStreamReader reader = new GcodeStreamReader(processedFile, backend.getCommandCreator())) {
             while (reader.getNumRowsRemaining() > 0) {
-                result.add(reader.getNextCommand().getCommandString());
+                result.add(reader.getNextCommand());
             }
         }
         return result;

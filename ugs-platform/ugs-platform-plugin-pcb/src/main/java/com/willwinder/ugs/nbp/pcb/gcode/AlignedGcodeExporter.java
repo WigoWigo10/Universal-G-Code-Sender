@@ -50,6 +50,7 @@ import java.util.Optional;
  */
 public class AlignedGcodeExporter {
     public static final String ERROR_SOURCE_NOT_FOUND = "The program to align could not be read: ";
+    public static final String ERROR_SOURCE_CHANGED = "The program was changed after the alignment was confirmed, so it was not aligned: ";
     public static final String ERROR_ALREADY_ALIGNED = "The program is already aligned, align the original program instead: ";
     public static final String ERROR_TARGET_IS_SOURCE = "The aligned program can not replace the original program: ";
     public static final String ERROR_TARGET_NOT_ALIGNED = "The file already exists and is not an aligned program, it will not be replaced: ";
@@ -73,6 +74,15 @@ public class AlignedGcodeExporter {
      * @throws AlignmentException if the program could not be aligned, in which case the target is not changed
      */
     public AlignedGcodeFile export(File source, RigidTransform2D transform, Code workCoordinateSystem, File target) throws AlignmentException {
+        return export(source, transform, workCoordinateSystem, target, null);
+    }
+
+    /**
+     * @param expectedSourceSha256 the hash that the original program must have, or null if any content is accepted.
+     *                             This makes sure that the program that is aligned is the one that was decided on.
+     * @throws AlignmentException if the program could not be aligned, in which case the target is not changed
+     */
+    public AlignedGcodeFile export(File source, RigidTransform2D transform, Code workCoordinateSystem, File target, String expectedSourceSha256) throws AlignmentException {
         validateArguments(source, transform, workCoordinateSystem, target);
 
         byte[] sourceBytes;
@@ -80,6 +90,10 @@ public class AlignedGcodeExporter {
             sourceBytes = Files.readAllBytes(source.toPath());
         } catch (IOException e) {
             throw new AlignmentException(ERROR_SOURCE_NOT_FOUND + source, e);
+        }
+
+        if (expectedSourceSha256 != null && !expectedSourceSha256.equals(AlignmentMetadata.sha256(sourceBytes))) {
+            throw new AlignmentException(ERROR_SOURCE_CHANGED + source);
         }
 
         List<String> sourceLines = new String(sourceBytes, StandardCharsets.UTF_8).lines().toList();

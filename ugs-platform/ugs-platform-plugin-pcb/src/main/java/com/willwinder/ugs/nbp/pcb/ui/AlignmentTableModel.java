@@ -43,10 +43,18 @@ public class AlignmentTableModel extends AbstractTableModel {
     private static final String[] COLUMNS = {"#", "Nominal X", "Nominal Y", "Measured X", "Measured Y", "Residual", "Machine"};
 
     private final AlignmentModel model;
+    private final Runnable modelListener = this::fireTableDataChanged;
 
     public AlignmentTableModel(AlignmentModel model) {
         this.model = model;
-        model.addListener(this::fireTableDataChanged);
+        model.addListener(modelListener);
+    }
+
+    /**
+     * Stops showing the model, which may outlive the table
+     */
+    public void dispose() {
+        model.removeListener(modelListener);
     }
 
     @Override
