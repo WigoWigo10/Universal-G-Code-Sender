@@ -150,8 +150,8 @@ public class VisualizerOptions extends ArrayList<Option<?>> {
 
         // Autoleveler surface mesh
         add(getOption(VISUALIZER_OPTION_AUTOLEVEL_PREVIEW, Localization.getString(VISUALIZER_OPTION_AUTOLEVEL_PREVIEW_DESC), true));
-        add(getOption(VISUALIZER_OPTION_HIGH, "", new Color(0, 255, 0, 128)));
-        add(getOption(VISUALIZER_OPTION_LOW, "", new Color(255, 0, 0, 128)));
+        add(getOption(VISUALIZER_OPTION_HIGH, "", new Color(180, 4, 38, 205)));
+        add(getOption(VISUALIZER_OPTION_LOW, "", new Color(59, 76, 192, 205)));
 
         // Machine boundries
         add(getOption(VISUALIZER_OPTION_BOUNDRY, Localization.getString(VISUALIZER_OPTION_BOUNDRY_DESC), true));

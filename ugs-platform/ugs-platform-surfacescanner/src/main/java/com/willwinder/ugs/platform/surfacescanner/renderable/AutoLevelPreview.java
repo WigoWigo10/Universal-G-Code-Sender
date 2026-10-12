@@ -53,10 +53,14 @@ public class AutoLevelPreview extends Renderable {
     private double maxZ;
     private double minZ;
 
-    private float[] high = {0, 255, 0}; // green
-    private float[] low = {255, 0, 0}; // red
+    private float[] high = {0.7f, 0.02f, 0.15f, 0.8f};
+    private float[] low = {0.23f, 0.3f, 0.75f, 0.8f};
     private static final float[] touchPlateColor = {0.4f, 0.5f, 0.8f, 0.35f};
     private static final float[] probeAreaColor = {0.3f, 0, 0, 0.2f};
+    private static final float[] MIDDLE_COLOR = {0.91f, 0.91f, 0.91f};
+    private static final float[] MESH_COLOR = {0.1f, 0.1f, 0.1f, 0.3f};
+    private static final float[] POINT_COLOR = {0.2f, 0.2f, 0.2f, 1.0f};
+    private static final float POINT_SIZE = 5f;
 
     public AutoLevelPreview(String title) {
         super(10, title, VISUALIZER_OPTION_AUTOLEVEL_PREVIEW);
@@ -121,10 +125,6 @@ public class AutoLevelPreview extends Renderable {
         Position first = Iterables.getFirst(positions, null);
         Units unit = first.getUnits();
 
-        double objectX = objectMax.x - objectMin.x;
-        double objectY = objectMax.y - objectMin.y;
-        double diameter = Math.max(objectX * 0.005, objectY * 0.005);
-
         double minx, miny;
         double maxx, maxy;
         double maxz;
@@ -141,12 +141,18 @@ public class AutoLevelPreview extends Renderable {
             gl.glScaled(scale, scale, scale);
         }
 
-        // Balls indicating the probe start locations.
-        gl.glColor4fv(new float[]{0.1f, 0.1f, 0.1f, 1.0f}, 0);
+        // With lighting enabled the alpha channel is taken from the diffuse material instead of the
+        // current color, so translucent geometry would be drawn opaque. The surface has no normals
+        // either, so without lighting its colors are exactly the ones of its heights.
+        gl.glDisable(GL2.GL_LIGHTING);
+
+        // Dots indicating the probe start locations.
+        gl.glEnable(GL2.GL_POINT_SMOOTH);
+        gl.glPointSize(POINT_SIZE);
+        gl.glColor4fv(POINT_COLOR, 0);
+        gl.glBegin(GL2.GL_POINTS);
         for (Position p : positions) {
-            gl.glPushMatrix();
-            gl.glTranslated(p.x, p.y, p.z);
-            glut.glutSolidSphere(diameter / scale, 7, 7);
+            gl.glVertex3d(p.x, p.y, p.z);
 
             // update min/max
             minx = Math.min(minx, p.x);
@@ -154,14 +160,11 @@ public class AutoLevelPreview extends Renderable {
             miny = Math.min(miny, p.y);
             maxz = Math.max(maxz, p.z);
             maxy = Math.max(maxy, p.y);
-            gl.glPopMatrix();
         }
+        gl.glEnd();
 
         drawProbedSurface(gl);
 
-        // With lighting enabled the alpha channel is taken from the diffuse material instead of the
-        // current color, so translucent geometry would be drawn opaque
-        gl.glDisable(GL2.GL_LIGHTING);
         drawProbeAreaOutline(gl, minx, maxx, miny, maxy, maxz);
         drawProbeAreaOutline(gl, minx, maxx, miny, maxy, probeAreaMinZ);
         drawTouchPlate(gl, minx, maxx, miny, maxy);
@@ -201,14 +204,29 @@ public class AutoLevelPreview extends Renderable {
         gl.glDepthMask(true);
     }
 
-    private void setColorForZ(GL2 gl, double zPos) {
-        float ratio = (float) ((zPos - minZ) / (maxZ - minZ));
-        float r = ratio * high[0] + (1 - ratio) * low[0];
-        float g = ratio * high[1] + (1 - ratio) * low[1];
-        float b = ratio * high[2] + (1 - ratio) * low[2];
-        float a = ratio * high[3] + (1 - ratio) * low[3];
+    /**
+     * Returns the color for a height: from the low color through a neutral one to the high color, so
+     * that what is above and what is below the middle is told apart at a glance.
+     */
+    static float[] getColorForZ(double zPos, double minZ, double maxZ, float[] low, float[] high) {
+        float ratio = maxZ > minZ ? (float) Math.max(0, Math.min(1, (zPos - minZ) / (maxZ - minZ))) : 0.5f;
+        float[] from = ratio < 0.5f ? low : MIDDLE_COLOR;
+        float[] to = ratio < 0.5f ? MIDDLE_COLOR : high;
+        float t = ratio < 0.5f ? ratio * 2 : ratio * 2 - 1;
+        return new float[]{
+                from[0] + t * (to[0] - from[0]),
+                from[1] + t * (to[1] - from[1]),
+                from[2] + t * (to[2] - from[2]),
+                low[3] + ratio * (high[3] - low[3])};
+    }
 
-        gl.glColor4f(r, g, b, a);
+    private void addVertex(GL2 gl, Position position) {
+        gl.glColor4fv(getColorForZ(position.z, minZ, maxZ, low, high), 0);
+        gl.glVertex3d(position.x, position.y, position.z);
+    }
+
+    private static boolean isProbed(Position position) {
+        return position != null && !Double.isNaN(position.z);
     }
 
     private void drawProbedSurface(GL2 gl) {
@@ -216,19 +234,9 @@ public class AutoLevelPreview extends Renderable {
             return;
         }
 
-        /*
-    0,5 ?   ?   ?   ?   ? 5,5
-
-        *   ?   ?   ?   ?
-          \
-        *   *   ?   ?   ?
-          x   \
-        *   *   *   ?   ?
-          x   x   \
-    0,0 *   *   *   *   ? 5,0
-
-        */
-
+        // The surface is pushed back a little, so that the mesh and the tool path on it are not hidden by it
+        gl.glEnable(GL2.GL_POLYGON_OFFSET_FILL);
+        gl.glPolygonOffset(1f, 1f);
         gl.glBegin(GL2.GL_TRIANGLES);
         int xLen = this.grid.length;
         for (int x = 0; x < xLen - 1; x++) {
@@ -243,30 +251,46 @@ public class AutoLevelPreview extends Renderable {
                 Position pos4 = this.grid[x + 1][y + 1];
 
                 // Bottom left of quad
-                if (pos1 != null && pos2 != null && pos3 != null) {
-                    setColorForZ(gl, pos1.z);
-                    gl.glVertex3d(pos1.x, pos1.y, pos1.z); // Left Of Triangle (Front)
-
-                    setColorForZ(gl, pos3.z);
-                    gl.glVertex3d(pos3.x, pos3.y, pos3.z); // Top Of Triangle (Front)
-
-                    setColorForZ(gl, pos2.z);
-                    gl.glVertex3d(pos2.x, pos2.y, pos2.z); // Right Of Triangle (Front)
+                if (isProbed(pos1) && isProbed(pos2) && isProbed(pos3)) {
+                    addVertex(gl, pos1);
+                    addVertex(gl, pos3);
+                    addVertex(gl, pos2);
                 }
+
                 // Top right of quad
-                if (pos2 != null && pos3 != null && pos4 != null) {
-                    setColorForZ(gl, pos4.z);
-                    gl.glVertex3d(pos4.x, pos4.y, pos4.z); // Right Of Triangle (Front)
-
-                    setColorForZ(gl, pos3.z);
-                    gl.glVertex3d(pos3.x, pos3.y, pos3.z); // Top Of Triangle (Front)
-
-                    setColorForZ(gl, pos2.z);
-                    gl.glVertex3d(pos2.x, pos2.y, pos2.z); // Left Of Triangle (Front)
+                if (isProbed(pos2) && isProbed(pos3) && isProbed(pos4)) {
+                    addVertex(gl, pos4);
+                    addVertex(gl, pos3);
+                    addVertex(gl, pos2);
                 }
             }
         }
+        gl.glEnd();
+        gl.glDisable(GL2.GL_POLYGON_OFFSET_FILL);
 
+        // The mesh between the probed points
+        gl.glLineWidth(1f);
+        gl.glColor4fv(MESH_COLOR, 0);
+        gl.glBegin(GL2.GL_LINES);
+        for (int x = 0; x < xLen; x++) {
+            if (this.grid[x] == null) {
+                continue;
+            }
+            for (int y = 0; y < this.grid[x].length; y++) {
+                Position position = this.grid[x][y];
+                if (!isProbed(position)) {
+                    continue;
+                }
+                if (y + 1 < this.grid[x].length && isProbed(this.grid[x][y + 1])) {
+                    gl.glVertex3d(position.x, position.y, position.z);
+                    gl.glVertex3d(this.grid[x][y + 1].x, this.grid[x][y + 1].y, this.grid[x][y + 1].z);
+                }
+                if (x + 1 < xLen && this.grid[x + 1] != null && y < this.grid[x + 1].length && isProbed(this.grid[x + 1][y])) {
+                    gl.glVertex3d(position.x, position.y, position.z);
+                    gl.glVertex3d(this.grid[x + 1][y].x, this.grid[x + 1][y].y, this.grid[x + 1][y].z);
+                }
+            }
+        }
         gl.glEnd();
     }
 
